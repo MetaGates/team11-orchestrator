@@ -2,6 +2,8 @@
 name: team11
 description: "MANUAL ONLY — invoke via /team11. Multi-agent orchestration: 1 CEO + 10 coder-auditors in 5 rotating pairs. Background execution, per-project hive mind, human review gates."
 autoTrigger: false
+disable-model-invocation: true
+user-invocable: true
 ---
 
 # Team11: Paired Agent Orchestration System
@@ -364,6 +366,21 @@ Before dispatching agents, scan the current project for available MCP servers:
 4. Check `~/.claude/settings.json` for global MCPs
 
 Tell agents which MCP tools are available in their dispatch prompt. Agents should prefer MCP tools when they provide richer data than built-in tools (e.g., Postgres MCP for schema inspection vs raw SQL).
+
+### Memory MCP (Knowledge Graph)
+
+The Memory MCP server (`@modelcontextprotocol/server-memory`) is configured for Team11's knowledge graph. Data stored in `.team11/knowledge-graph.jsonl`.
+
+**Tools available:**
+- `create_entities` — Create entity nodes (name, type, observations)
+- `create_relations` — Connect entities with directed relations
+- `add_observations` — Append facts to existing entities
+- `search_nodes` — Search across entity names, types, and observations
+- `open_nodes` — Retrieve specific entities by name
+- `read_graph` — Return the complete graph
+- `delete_entities` / `delete_relations` / `delete_observations` — Cleanup
+
+**Use for:** Storing structured coordination state, agent learnings, cross-session knowledge that's more complex than flat files. Complements (does not replace) the file-based hive mind.
 
 ## Commands
 
@@ -805,6 +822,8 @@ All agents run in background. The user's main session stays unblocked. **Only su
 
 **CRITICAL: Always notify IMMEDIATELY.** When any of the above events happen (findings ready, approval needed, blocker hit, completion), surface it to the user right away. The user should NEVER have to poll `/team11 findings` or `/team11 proposals` to discover pending items. Those commands exist as a backup checklist, not as the primary notification mechanism.
 
+**CRITICAL: Always include file paths in reports.** When presenting agent results, synthesized findings, or research reports to the user, ALWAYS include the absolute or project-relative file paths to any documents the agents produced. The user must be able to open and read the raw reports themselves. Format: `Report: .omc/research/pair1-research.md`. This applies to completion reports, research summaries, findings, proposals — any agent output that produced a file.
+
 ## Stopping Agents
 
 `/team11 stop` halts all running background agents. `/team11 stop pair <N>` stops just one pair.
@@ -865,6 +884,7 @@ This gives you a real-time view of what code the agent is actively writing.
 - Share context via dispatch prompts — don't have multiple agents read the same file.
 - Output compression: when relaying test results or logs to agents, trim to failures-only.
 - Track token usage: note in the pair log how many tool calls each round took.
+- **Max 3 active MCP servers per agent.** Each MCP server's tool definitions consume tokens on every request. Before dispatching agents, audit active MCPs and disable any not needed for the current task. 5+ MCPs causes measurable context bloat. Use `/context` to check consumption.
 
 ## Ambiguity & Clarification Protocol
 
