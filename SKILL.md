@@ -1065,8 +1065,12 @@ An agent proposes a memory when it:
    Action needed: Approve / Reject / Modify
    ```
 
-3. **Human decides:**
-   - **Approve** → CEO saves it to the proper location (`~/.claude/skills/` for skills, project memory for memories)
+3. **CEO scans proposal for secrets** before surfacing:
+   - Grep for patterns: API keys, passwords, tokens, connection strings, private keys
+   - If found: redact and warn user. Never save secrets to knowledge files.
+
+4. **Human decides:**
+   - **Approve** → CEO saves it to the proper location (knowledge topic file, or `~/.claude/skills/` for skills)
    - **Reject** → CEO deletes the proposal file
    - **Modify** → CEO updates based on human feedback, then saves
 

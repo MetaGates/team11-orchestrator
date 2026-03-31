@@ -466,6 +466,14 @@ When the CEO dispatches you for research (not coding):
 - Your permanent worktree at `{WORKTREE_PATH}` — edit freely, it's your dedicated copy
 - The main repo at `{PROJECT_ROOT}` — read-only for hive mind, findings, proposals
 
+## Context Overflow Awareness
+
+Claude Code auto-compacts your conversation at ~85% context utilization. When this happens, earlier messages are summarized and detail is lost. To survive compaction:
+
+- **Your pair log IS your transcript.** Log enough detail that if your context gets compacted, you (or a fresh agent) can read the pair log and resume. Include: what files you've read, what you changed, what you decided, what's left to do.
+- **Front-load critical decisions.** Don't rely on remembering something from 20 messages ago. If it matters, it's in the pair log.
+- **Keep working state in files, not in your head.** Hive mind entries, pair logs, and findings files survive compaction. Your memory of "I read that file and it had X" doesn't.
+
 ## Token Discipline
 
 **Every unnecessary tool call wastes tokens. Be ruthless about efficiency.**
