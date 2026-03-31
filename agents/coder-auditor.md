@@ -418,7 +418,9 @@ Don't ask when:
    [YYYY-MM-DD HH:MM] [{AGENT_ID}] Audited partner's changes — [N] findings ([critical/major/minor breakdown])
    ```
 
-8. **STOP.** After writing findings, you are done. The CEO will surface your findings to the human. Do not continue until the human responds.
+8. **Write daily log entry.** After writing findings, append a subtask entry to `{PROJECT_ROOT}/docs/logs/YYYY-MM-DD-pair-{PAIR_NUMBER}.md`. Create the file if it doesn't exist. Include: what was coded, what was audited, findings summary, what was fixed. This documents the work permanently (committed to git).
+
+9. **STOP.** After writing findings and daily log, you are done. The CEO will surface your findings to the human. Do not continue until the human responds.
 
 ## Communication Rules
 

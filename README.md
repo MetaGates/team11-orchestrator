@@ -143,7 +143,7 @@ Team11 doesn't just write code — it builds institutional knowledge.
 
 ### Daily Work Logs (`docs/logs/YYYY-MM-DD.md`)
 
-Every hour (when work was done), the CEO writes a detailed knowledge entry to a daily log file that gets committed to git. These are permanent project documentation, not throwaway notes.
+After each completed subtask, the auditor writes a detailed knowledge entry to a per-pair daily log file that gets committed to git. These are permanent project documentation, not throwaway notes.
 
 Each entry includes:
 - **What was completed** (with file paths, checkboxes)
@@ -235,7 +235,7 @@ To turn it off mid-task: `/team11 stop`
 
 ---
 
-## Full Command Reference (24 commands)
+## Full Command Reference (21 commands)
 
 ### Setup & Teardown (one-time per project)
 | Command | What It Does |
@@ -262,7 +262,6 @@ To turn it off mid-task: `/team11 stop`
 | `/team11 log <N>` | Pair N's activity log |
 | `/team11 watch` | Live view: all pairs — hive + latest log entries |
 | `/team11 watch <N>` | Live view: pair N — log + current git diff in worktree |
-| `/team11 mcps` | All discovered MCP servers for this project |
 
 ### Review & Approval
 | Command | What It Does |
@@ -278,8 +277,6 @@ To turn it off mid-task: `/team11 stop`
 | `/team11 log-today` | Display today's daily work log |
 | `/team11 project-prompt` | Display the project knowledge index |
 | `/team11 project-prompt init` | Deep codebase scan → generate initial project knowledge |
-| `/team11 project-prompt edit` | Suggest improvements based on recent work |
-| `/team11 test-prompt` | Test prompt effectiveness on a small known task |
 
 ### Meta
 | Command | What It Does |
@@ -471,7 +468,6 @@ This also enables version history for the prompts themselves — you can see how
 | `/team11 log-today` | Today's work log |
 | `/team11 project-prompt` | View project knowledge |
 | `/team11 project-prompt init` | Generate project knowledge from codebase |
-| `/team11 test-prompt` | Test if prompts are working |
 | `/team11 recover` | Fix crashed pairs |
 | `/team11 setup` | One-time worktree setup |
 | `/team11 reset all` | Reset between tasks |

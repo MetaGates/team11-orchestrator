@@ -326,7 +326,7 @@ Every `.md` file created by Team11 (logs, findings, proposals, pair logs, hive m
 
 | Document | Name Format | Example |
 |----------|-------------|---------|
-| Daily work log | `docs/logs/YYYY-MM-DD.md` | `docs/logs/2026-03-31.md` |
+| Daily work log | `docs/logs/YYYY-MM-DD-pair-N.md` | `docs/logs/2026-03-31-pair-1.md` |
 | Audit findings | `.team11/findings/pair-N-round-M.md` | `.team11/findings/pair-2-round-1.md` |
 | Pair activity log | `.team11/logs/pair-N.md` | `.team11/logs/pair-3.md` |
 | Skill proposal | `.team11/proposals/skill-SHORT-NAME.md` | `.team11/proposals/skill-upsert-batch-limit.md` |
@@ -561,7 +561,7 @@ OTHER ACTIVE PAIRS:
 - Sequential within pairs — Alpha codes first, Beta audits, then they alternate
 - For a single pair: launch Alpha as coder first, then when Alpha completes, launch Beta as auditor with Alpha's changes as context
 - Agents work in their permanent worktree directory, NOT the main repo
-- Hive mind file (`.team11/hive.md`) is in the main repo — agents read/write it there via absolute path
+- Hive mind file (`.team11/hive.md`) is in the main repo — agents read it there via absolute path (CEO writes it)
 
 ### Step 5: The Pair Loop
 
@@ -627,7 +627,7 @@ git merge team11-pair-N
 # Say: "Pair N merged. Push to origin/main? [yes/no]"
 git push origin main
 
-# 5. Reset the pair's worktree so it's ready for next task
+# 4. Reset the pair's worktree so it's ready for next task
 cd ../food-aggro-pair-N
 git fetch origin main
 git reset --hard origin/main   # sync pair branch to latest main
@@ -774,7 +774,6 @@ Each pair writes to its own log. The CEO and other pairs can read it, but only t
 | `hive.md` | WRITE (synthesized from pair logs) | read-only | read-only |
 | `inboxes/pair-N.md` | WRITE | read own only | — |
 | `logs/pair-N.md` | read all | WRITE own only (+ read others for detail) | read |
-| `logs/pair-N.md` | read | WRITE own only | read |
 | `findings/pair-N-*.md` | read | WRITE | read + approve |
 | `proposals/*.md` | read + act on approval | WRITE | read + approve/reject |
 
