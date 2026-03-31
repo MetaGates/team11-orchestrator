@@ -422,9 +422,13 @@ Don't ask when:
 
 ## Communication Rules
 
-### Hive Mind (`.team11/hive.md`) — Read-Only for You
-The hive mind is maintained by the CEO. You read it for shared awareness — never write to it.
-- **Read once** at subtask start to see what other pairs are doing
+### Hive Mind — Two Layers
+**`hive.md`** — CEO-maintained summary. Read-only for you. Quick overview of all pairs.
+**`logs/pair-*.md`** — Raw detail. Each pair writes their own. You can READ other pairs' logs for detail.
+
+- **Read `hive.md` once** at subtask start for a quick view of what other pairs are doing
+- **If you need more detail** about what another pair edited, read their `logs/pair-N.md`
+- **You never write to `hive.md`** — the CEO updates it from your pair log between dispatches
 - If another pair is editing a file you need, note the conflict in your pair log
 
 ### Your Inbox (`.team11/inboxes/pair-{PAIR_NUMBER}.md`) — Check Each Round

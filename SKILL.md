@@ -41,7 +41,9 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
       └── memory-XXXX.md             # Proposed memory (awaiting human approval)
 
 <project-root>/docs/logs/            # Permanent documentation (checked into git)
-  └── YYYY-MM-DD.md                  # Daily work log (appended throughout the day)
+  ├── YYYY-MM-DD-pair-1.md           # Pair 1's daily log (pair writes, no collision)
+  ├── YYYY-MM-DD-pair-2.md           # Pair 2's daily log
+  └── YYYY-MM-DD-pair-CEO.md         # CEO's daily log (session summary, decisions)
 ```
 
 Agent working state (`.team11/`) is ephemeral and gitignored. Daily logs (`docs/logs/`) are permanent and committed. Agents append to the daily log after each completed subtask.
@@ -390,9 +392,6 @@ Team11 is **manual-only**. It does nothing unless you invoke it. No auto-trigger
 | `/team11 log-today` | Display today's daily work log (`docs/logs/YYYY-MM-DD.md`) |
 | `/team11 project-prompt` | Display the current project prompt (`.team11/project-prompt.md`) |
 | `/team11 project-prompt init` | Auto-generate initial project prompt by scanning the codebase |
-| `/team11 project-prompt edit` | Open project prompt for manual editing suggestions |
-| `/team11 test-prompt` | Test project prompt effectiveness by running a small known task through one pair |
-| `/team11 mcps` | Show all discovered MCP servers for the current project |
 | `/team11 help` | Show this command list |
 
 **Important:** When Team11 is not invoked, it is completely inert. It consumes zero tokens, runs zero agents, and does not interfere with your normal Claude Code session.
@@ -695,21 +694,41 @@ All worktrees end up on the same main after their reset. No drift.
 
 Team11 uses two communication channels:
 
-### Hive Mind (`.team11/hive.md`) — CEO-Write-Only
+### Hive Mind — Two Layers
 
-The hive mind is a **read-only summary** that pairs consult for shared awareness. **Only the CEO writes to it.** This eliminates all concurrent-write race conditions.
+The "hive mind" is not one file — it's a pattern across two layers:
 
-**What the CEO writes:** After each pair dispatch, merge, reset, or status change:
+**Layer 1: `hive.md` — CEO-maintained summary (CEO-write-only)**
+Quick-glance overview of all pairs. Only the CEO writes to it — zero contention.
+Updated by the CEO between every dispatch (reads pair logs, synthesizes into hive).
+
 ```
-| Pair | Task | Files | Status | Task ID | Timestamp |
-|------|------|-------|--------|---------|-----------|
-| 1 | Add signals endpoint | venues.py, signals.py | coding | bg-abc123 | 14:32 |
-| 2 | Write signal tests | test_signals.py | auditing | bg-def456 | 14:30 |
+| Pair | Task | Files Touched | Status | Last Activity | Timestamp |
+|------|------|---------------|--------|---------------|-----------|
+| 1 | Add signals endpoint | venues.py, signals.py, schemas.py | coding | Alpha editing schemas | 14:32 |
+| 2 | Write signal tests | test_signals.py | auditing | Beta reviewing Alpha's code | 14:35 |
 ```
 
-**What pairs do:** Read it at subtask start for awareness. Never write to it.
+**Layer 2: `logs/pair-N.md` — Raw detail (each pair writes their own)**
+Every file edit, every action, every decision — timestamped in the pair's own log. Zero contention because each pair writes only to their own file.
 
-**CEO maintenance:** Clean entries on every merge/reset. Remove completed/stopped pairs. Update status as pairs progress.
+**How they work together:**
+1. Agents log every action to their own `logs/pair-N.md`
+2. CEO reads all pair logs between dispatches → updates `hive.md` with a synthesized summary
+3. When a new agent is dispatched, it reads `hive.md` for a quick overview
+4. If it needs more detail about what another pair did, it reads that pair's log directly
+
+**Why this is better than shared writes:**
+- Zero concurrent write issues (each writer has their own file)
+- Hive.md is always accurate (CEO updates it from actual pair logs, not guesses)
+- Raw detail is always available in pair logs for deep inspection
+- CEO controls the narrative — decides what's important enough for the summary
+
+**CEO update protocol:**
+After every agent completion (coder finishes, auditor finishes, merge, reset):
+1. Read the pair's log for new entries since last check
+2. Update hive.md with what actually happened
+3. Include updated hive in the next dispatch
 
 ### Mailboxes (`.team11/inboxes/pair-N.md`) — Targeted Messages
 
@@ -752,8 +771,9 @@ Each pair writes to its own log. The CEO and other pairs can read it, but only t
 
 | File | CEO | Pairs | Human |
 |------|-----|-------|-------|
-| `hive.md` | WRITE | read-only | read-only |
+| `hive.md` | WRITE (synthesized from pair logs) | read-only | read-only |
 | `inboxes/pair-N.md` | WRITE | read own only | — |
+| `logs/pair-N.md` | read all | WRITE own only (+ read others for detail) | read |
 | `logs/pair-N.md` | read | WRITE own only | read |
 | `findings/pair-N-*.md` | read | WRITE | read + approve |
 | `proposals/*.md` | read + act on approval | WRITE | read + approve/reject |
@@ -926,7 +946,7 @@ git push, PR create/merge, file deletion outside worktree, destructive git ops (
 
 ## Daily Work Log
 
-One log file per day: `docs/logs/YYYY-MM-DD.md`. Appended throughout the day as subtasks complete. **Not written by the CEO** — written by the auditor agent after each successful audit.
+**Per-pair log files:** `docs/logs/YYYY-MM-DD-pair-N.md`. Each pair writes to its own daily log — zero collision risk. The CEO writes to `docs/logs/YYYY-MM-DD-pair-CEO.md` for session summaries and architectural decisions.
 
 **Workflow:** After a subtask is audited and the pair agrees it's clean:
 1. The auditor writes the log entry for that subtask (while the coder moves on to the next subtask)
@@ -1065,9 +1085,28 @@ An agent proposes a memory when it:
    Action needed: Approve / Reject / Modify
    ```
 
-3. **CEO scans proposal for secrets** before surfacing:
-   - Grep for patterns: API keys, passwords, tokens, connection strings, private keys
-   - If found: redact and warn user. Never save secrets to knowledge files.
+3. **CEO scans proposal for secrets** before surfacing. Use these concrete regex patterns:
+   ```
+   AKIA[0-9A-Z]{16}                    # AWS access key
+   [A-Za-z0-9/+=]{40}                  # AWS secret key (near AKIA or aws_secret)
+   sk-[a-zA-Z0-9]{48,}                 # OpenAI API key
+   sk-ant-[a-zA-Z0-9-]{90,}            # Anthropic API key
+   ghp_[a-zA-Z0-9]{36}                 # GitHub personal access token
+   gho_[a-zA-Z0-9]{36}                 # GitHub OAuth token
+   postgresql://[^\s]+:[^\s]+@          # DB connection string with credentials
+   redis://[^\s]*:[^\s]+@              # Redis connection string with password
+   mongodb(\+srv)?://[^\s]+:[^\s]+@    # MongoDB connection string
+   -----BEGIN (RSA |EC |)PRIVATE KEY   # Private keys
+   eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}  # JWT tokens
+   Bearer [a-zA-Z0-9_-]{20,}          # Auth bearer tokens
+   xox[bprs]-[a-zA-Z0-9-]+            # Slack tokens
+   SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}  # SendGrid API key
+   password\s*[=:]\s*[^\s]{8,}        # Hardcoded passwords
+   secret\s*[=:]\s*[^\s]{8,}          # Hardcoded secrets
+   ```
+   If ANY pattern matches: redact the match, warn user, and NEVER save to knowledge files.
+   
+   **Also scan pair logs and daily logs before git commit.** Secrets in committed logs enter git history permanently. The CEO should grep pair logs and daily log entries through these patterns before any `git add` on docs/logs/ files.
 
 4. **Human decides:**
    - **Approve** → CEO saves it to the proper location (knowledge topic file, or `~/.claude/skills/` for skills)
