@@ -618,16 +618,31 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
 cd <main-repo>
 git pull origin main
 
-# 2. Merge the pair's permanent branch into main
-git merge team11-pair-N
+# 2. Squash-merge the pair's work into main as ONE clean commit
+git merge --squash team11-pair-N
 # If conflict: surface the conflict to the user with both sides shown.
 # User decides: resolve manually, re-dispatch the pair, or discard.
 
-# 3. Push to remote (ASK USER FIRST — always confirm before pushing)
+# 3. Commit with a proper message using the commit protocol (trailers)
+git commit -m "$(cat <<'COMMIT'
+<type>(<scope>): <description>
+
+<body — what changed and why>
+
+Constraint: ...
+Rejected: ...
+Confidence: high
+Scope-risk: narrow
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+COMMIT
+)"
+
+# 4. Push to remote (ASK USER FIRST — always confirm before pushing)
 # Say: "Pair N merged. Push to origin/main? [yes/no]"
 git push origin main
 
-# 4. Reset the pair's worktree so it's ready for next task
+# 5. Reset the pair's worktree so it's ready for next task
 cd ../food-aggro-pair-N
 git fetch origin main
 git reset --hard origin/main   # sync pair branch to latest main
