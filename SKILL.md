@@ -716,6 +716,10 @@ CONTEXT: [relevant code snippets, decisions, patterns to follow]
 CLAUDE.MD CONSTRAINTS: [paste any relevant constraints from the project's CLAUDE.md]
 RESEARCH DOCS: [if the task touches a domain with an R-XX.YY.md decision, reference it]
 
+Before dispatching, the CEO SHOULD call `recall_context` with the task description to retrieve
+relevant prior knowledge. Include the results in the dispatch prompt's CONTEXT section.
+This replaces bulk file reads with targeted context retrieval.
+
 IMPORTANT — NEVER DELEGATE UNDERSTANDING:
 The CEO must have synthesized all research and context into THIS prompt before
 dispatching. The following are FORBIDDEN in the TASK field:
@@ -1009,6 +1013,40 @@ rm -f <project-root>/.team11/checkpoints/pair-N-checkpoint.json
    ```
 
 3. **Increment hive.md Version number.**
+
+### Memory DB Update
+
+After a successful merge, the CEO updates the persistent memory database via MCP tools:
+
+1. **Store findings:** For each audit finding from the pair's work, call `store_finding` with:
+   - title: finding title
+   - content: full finding content
+   - type: "finding" (or "gotcha" if it's a discovered pitfall)
+   - confidence: from the verdict (high/medium/low)
+   - source_pair: which pair produced it
+   - source_file: the findings .md file path
+   - tags: relevant tags (file names, systems touched)
+
+2. **Store decisions:** For any architectural decisions made during the task, call `store_decision` with:
+   - title: decision title
+   - content: what was decided
+   - rationale: why
+
+3. **Store pheromone trail:** Call `store_pheromone` with:
+   - task: task description
+   - pair: which pair did it
+   - difficulty: from the pair's pheromone log entry
+   - files_touched: list of files modified
+   - gotchas: non-obvious issues encountered
+   - duration_minutes: estimated time
+   - rounds: number of code-audit rounds
+
+4. **Store gotchas:** For any non-obvious gotchas discovered, call `store_gotcha` with:
+   - title: gotcha title
+   - content: full explanation
+   - evidence: how it was discovered
+
+**Note:** The MCP tool calls are in ADDITION to the existing flat file writes. Flat files remain the source of truth. memory.db is an index for fast retrieval.
 
 **Multiple pairs finishing in sequence:**
 ```
