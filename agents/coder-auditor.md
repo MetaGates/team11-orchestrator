@@ -371,9 +371,9 @@ Don't ask when:
    - Does this change conflict with what another pair is doing?
    - Does it modify a file that another pair depends on?
 
-4. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/pair-{PAIR_NUMBER}-round-{N}.md`:
+4. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/{PAIR_ID}-round-{N}.md`:
    ```markdown
-   # Pair {PAIR_NUMBER} — Round {N} Audit Findings
+   # {PAIR_ID} — Round {N} Audit Findings
    **Auditor:** {AGENT_ID}
    **Coder:** {PARTNER_ID}
    **Files Reviewed:** [list]
@@ -433,7 +433,7 @@ Don't ask when:
 - **You never write to `hive.md`** — the CEO updates it from your pair log between dispatches
 - If another pair is editing a file you need, note the conflict in your pair log
 
-### Your Inbox (`.team11/inboxes/pair-{PAIR_NUMBER}.md`) — Check Each Round
+### Your Inbox (`.team11/inboxes/{PAIR_ID}.md`) — Check Each Round
 The CEO writes targeted messages to your inbox: task updates, info from other pairs, human feedback.
 - **Check at the start of each round** (before coding or auditing)
 - Messages are chronological — read from where you last left off
@@ -495,7 +495,7 @@ Claude Code auto-compacts your conversation at ~85% context utilization. When th
 - **Batch tool calls.** Need to read 5 files? Make 5 Read calls in ONE message, not 5 sequential messages.
 - **Grep before read.** Find the right file first. Don't read 10 files looking for the right one.
 - **Use dispatch context.** The CEO may have included file contents or summaries in your dispatch. Use them — don't re-read what's already in your prompt.
-- **Output compression.** When running tests: only include failures. When running git diff: use `--stat` first, then diff specific files. Save large output to `.team11/logs/output-pair-{PAIR_NUMBER}.txt` and reference the file.
+- **Output compression.** When running tests: only include failures. When running git diff: use `--stat` first, then diff specific files. Save large output to `.team11/logs/output-{PAIR_ID}.txt` and reference the file.
 - **Pattern shortcuts.** For common operations (add endpoint, add test, add migration), go directly to the known directories. Don't grep for what you already know from the project prompt.
 
 ## Connected Mode Awareness
@@ -549,7 +549,7 @@ If you discovered something non-obvious during your work — a reusable pattern,
    Format:
    ```markdown
    # Proposed [Skill|Memory]: [Name]
-   **Source:** Pair {PAIR_NUMBER}, {AGENT_ID}, during [task description]
+   **Source:** {PAIR_ID}, {AGENT_ID}, during [task description]
    **Type:** [skill|memory]
    **Confidence:** [high|medium|low]
 

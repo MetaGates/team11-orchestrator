@@ -100,14 +100,14 @@ if [ -z "$EXISTING_SHA" ]; then
   gh api repos/$REPO/contents/$LOG_FILE \
     -X PUT \
     -f message="log: ${PREFIX}-pair-${N} update" \
-    -f content="$(base64 < .team11/logs/pair-${N}.md)" \
+    -f content="$(base64 < .team11/logs/${PREFIX}-pair-${N}.md)" \
     -f branch="team11-coord"
 else
   # Update existing
   gh api repos/$REPO/contents/$LOG_FILE \
     -X PUT \
     -f message="log: ${PREFIX}-pair-${N} update" \
-    -f content="$(base64 < .team11/logs/pair-${N}.md)" \
+    -f content="$(base64 < .team11/logs/${PREFIX}-pair-${N}.md)" \
     -f sha="$EXISTING_SHA" \
     -f branch="team11-coord"
 fi

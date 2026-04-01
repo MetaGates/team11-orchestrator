@@ -208,7 +208,7 @@ Proposals must be:
 **Key separation:**
 - Global plugin (`~/.claude/skills/team11/`) — the system itself. Portable, works everywhere.
 - Per-project state (`.team11/`) — ephemeral working data. Gitignored. Isolated per project.
-- Per-project daily logs (`docs/logs/YYYY-MM-DD.md`) — appended by auditors after each subtask. Committed to git.
+- Session logs (`docs/logs/YYYY-MM-DD-pair-CEO.md`) — compiled by CEO at standdown from pair logs. Committed to git.
 
 ---
 

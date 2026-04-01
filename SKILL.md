@@ -44,12 +44,10 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
       └── memory-XXXX.md             # Proposed memory (awaiting human approval)
 
 <project-root>/docs/logs/            # Permanent documentation (checked into git)
-  ├── YYYY-MM-DD-pair-1.md           # Pair 1's daily log (pair writes, no collision)
-  ├── YYYY-MM-DD-pair-2.md           # Pair 2's daily log
-  └── YYYY-MM-DD-pair-CEO.md         # CEO's daily log (session summary, decisions)
+  └── YYYY-MM-DD-pair-CEO.md         # Session log (CEO compiles at standdown)
 ```
 
-Agent working state (`.team11/`) is ephemeral and gitignored. Daily logs (`docs/logs/`) are permanent and committed. Agents append to the daily log after each completed subtask.
+Agent working state (`.team11/`) is ephemeral and gitignored. Session logs (`docs/logs/`) are permanent and committed. The CEO compiles them from pair logs at `/team11 standdown`.
 
 **On first run**, create `.team11/` and add `.team11/` to the project's `.gitignore` if not already present.
 
@@ -619,8 +617,11 @@ Each pair is launched using the `Agent` tool with:
 Read and follow the agent prompt at ~/.claude/skills/team11/agents/coder-auditor.md exactly.
 
 PAIR: [N]
+PAIR_ID: [pair-N in solo, {prefix}-pair-N in connected, e.g. cs-pair-1]
 AGENT: [Alpha|Beta]
 ROLE THIS ROUND: [coder|auditor]
+MODE: [solo|connected]
+OPERATOR: [operator name + prefix, e.g. "CyberStein (cs)" — omit in solo mode]
 PARTNER: [the other agent's context — what they're doing]
 WORKTREE PATH: [absolute path to permanent worktree, e.g. C:\Users\...\food-aggro-pair-1]
 PROJECT ROOT: [absolute path to main repo]
@@ -1414,6 +1415,12 @@ When connected:
 ### `/team11 connect` Protocol
 
 One-time per project. Creates the coordination infrastructure.
+
+**Prerequisite check:** Before anything else, verify `gh` CLI is installed and authenticated:
+```bash
+gh auth status 2>/dev/null || echo "ERROR: gh CLI not authenticated. Run: gh auth login"
+```
+If `gh` is not available, stop and tell the user to install it (`brew install gh` / `winget install GitHub.cli` / `scoop install gh`).
 
 1. Determine repo from `git remote get-url origin`
 2. Check if `team11-coord` branch already exists on remote — if yes, tell user to use `connect join`
