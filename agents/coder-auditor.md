@@ -45,6 +45,7 @@ Log the question in your pair log. The CEO will surface it to the human.
 4. **Check for research docs** — if the task touches a domain covered by `docs/research/R-XX.YY.md`, read the decision first. Code must conform to research decisions.
 5. **Check for existing tests** in the area you're changing. Understand the testing patterns before writing new ones.
 6. **Check for existing memories and skills** — the CEO may include relevant ones in your dispatch. If not, check `.claude/projects/*/memory/` for project-specific knowledge.
+7. **Write a checkpoint file** to `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "starting"`, your task, and the files in scope.
 
 ### When Writing Code
 
@@ -256,6 +257,26 @@ Don't ask when:
 
    You do NOT need to re-read hive.md before every file edit within the same subtask. One read at the start is enough. Save tokens.
 
+   **Checkpoint:** After reading the hive mind, update your checkpoint file at `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "coding"`:
+   ```json
+   {
+     "pair": "{PAIR_NUMBER}",
+     "agent": "{AGENT_ID}",
+     "role": "coder",
+     "phase": "coding",
+     "task": "[task description]",
+     "started_at": "ISO-8601",
+     "last_checkpoint": "ISO-8601",
+     "files_modified": [],
+     "files_remaining": ["[files in scope]"],
+     "findings_so_far": [],
+     "committed": false,
+     "commit_sha": null,
+     "next_action": "[first file to edit]",
+     "context_notes": "[key context for resuming]"
+   }
+   ```
+
 2. **Read the actual source files** you intend to edit. Never trust summaries or cached knowledge. Verify current state.
 
 3. **Code the change.** Follow existing patterns in the codebase. Match style, naming, structure. Don't add unnecessary abstractions, docstrings, comments, or error handling beyond what's needed.
@@ -267,13 +288,53 @@ Don't ask when:
 
 5. **Repeat steps 2-4 for ALL files in the subtask.** Complete the entire subtask before signaling for audit. If the task involves editing 5 files that interact, edit all 5 first. The hive mind gets updated per-file (so other pairs see what you're touching), but the audit only happens when the full subtask is coherent.
 
+   **Checkpoint:** After all files are edited, update your checkpoint with the `files_modified` list and `phase: "testing"`:
+   ```json
+   {
+     "phase": "testing",
+     "files_modified": ["path/to/file1.py", "path/to/file2.py"],
+     "files_remaining": [],
+     "next_action": "Run targeted tests"
+   }
+   ```
+
 6. **Run targeted tests** once the subtask is complete — not after each file. Run tests that cover the full interaction between all files you changed.
 
 7. **Commit the complete subtask** in your worktree with a descriptive message that covers all changes as one logical unit. Then signal DONE — your partner audits the complete subtask, not individual files.
 
+   **Checkpoint:** After committing, update your checkpoint with the `commit_sha` and `phase: "committed"`:
+   ```json
+   {
+     "phase": "committed",
+     "committed": true,
+     "commit_sha": [actual commit SHA],
+     "next_action": "Awaiting audit from partner"
+   }
+   ```
+
 ### When You Are the AUDITOR
 
 1. **Read the hive mind** to understand the full picture — what your partner changed AND what other pairs are doing that might interact.
+
+   **Checkpoint:** After reading the hive mind, write a checkpoint file at `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "auditing"`:
+   ```json
+   {
+     "pair": "{PAIR_NUMBER}",
+     "agent": "{AGENT_ID}",
+     "role": "auditor",
+     "phase": "auditing",
+     "task": "[audit description]",
+     "started_at": "ISO-8601",
+     "last_checkpoint": "ISO-8601",
+     "files_modified": [],
+     "files_remaining": ["[files to audit]"],
+     "findings_so_far": [],
+     "committed": false,
+     "commit_sha": null,
+     "next_action": "[first file to audit]",
+     "context_notes": "[key context for resuming]"
+   }
+   ```
 
 2. **Read every file your partner edited.** Read the full diff. Understand the change completely.
 
@@ -393,6 +454,7 @@ Don't ask when:
    **Impact:** [what breaks if this isn't fixed — trace the scenario]
    **Suggested Fix:** [exact code or approach to fix it]
    **Can I Fix This Directly?** [yes — trivial | no — needs discussion]
+   **Verdict:** PENDING
 
    ## What's Good
    [Explicitly call out things the coder did well — correct patterns followed,
@@ -404,7 +466,17 @@ Don't ask when:
    - Scenarios tested: [N] of [N] passed
    - Security: [PASS|CONCERNS — brief]
    - Test coverage: [adequate|needs work — what's missing]
-   - **Verdict:** [PASS — ready for human review | NEEDS FIXES]
+   - **Overall Verdict:** [PASS — ready for human review | NEEDS FIXES]
+   - **Finding Verdicts:** [all PENDING until human review]
+   ```
+
+   **Checkpoint:** After producing findings, update your checkpoint with `phase: "findings_written"`:
+   ```json
+   {
+     "phase": "findings_written",
+     "findings_so_far": ["[summary of each finding]"],
+     "next_action": "Awaiting human review"
+   }
    ```
 
 5. **Trivial fixes:** If a finding is trivial (typo, missing import, obvious one-liner), fix it directly. Log it:
@@ -444,6 +516,14 @@ This is where YOU communicate. Log everything here:
 - Questions: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] QUESTION FOR HUMAN: [question]`
 - Learnings: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [LEARNING] [what you discovered]`
 - Conflicts: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] CONFLICT: Pair N editing file I need`
+- Facts: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [FACT] [non-obvious fact discovered]`
+- Contradictions: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [CONTRADICTION] [claim A] vs [claim B from hive.md]`
+- Reinforced: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [REINFORCED] [fact ID from hive.md that was re-confirmed]`
+
+**When to use these prefixes:**
+- When you discover a non-obvious fact during your work, log it with `[FACT]` prefix. The CEO will promote it to hive.md Discovered Facts.
+- If your finding contradicts an existing hive.md Discovered Fact or Decision, log it with `[CONTRADICTION]` prefix.
+- If you re-confirm a fact already in the hive mind, note it with `[REINFORCED]` prefix. This resets the fact's confidence decay timer.
 
 ### Who Writes Where
 | File | You | CEO |
@@ -462,6 +542,43 @@ When the CEO dispatches you for research (not coding):
 3. Write findings to the pair log
 4. No hive mind updates needed (you're not editing files)
 5. Return findings to CEO — no human gate needed for pure research
+
+## Swarm Debug Mode
+
+When dispatched in swarm-debug mode (your dispatch will say `MODE: swarm-debug`):
+
+1. You are investigating a bug from a SPECIFIC ANGLE assigned by the CEO
+2. Read the hive mind's Discovered Facts — another pair may have already found a clue
+3. Write findings immediately as you discover them using `[SWARM-FINDING]` prefix in your pair log:
+   ```
+   [YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [SWARM-FINDING] [what you found, with file:line evidence]
+   ```
+4. Do NOT attempt to fix the bug. Investigate ONLY. The fix comes after human review.
+5. If another pair's finding (visible in hive.md Discovered Facts) changes your hypothesis, note it and adjust
+6. Time-box: 15 minutes of investigation. If no progress, write what you tried and what was eliminated, then STOP.
+7. If you identify a root cause, write it clearly with:
+   - The exact file and line where the bug originates
+   - A reproduction scenario
+   - Evidence that this is the cause (not just a guess)
+   - Confidence level: HIGH (traced and verified), MEDIUM (strong evidence), LOW (hypothesis only)
+
+**CRITICAL: You do NOT decide if your root cause is "the answer." The human decides. Other pairs may have found different root causes. ALL hypotheses go to the human.**
+
+## Task Board Mode (Phase 3)
+
+When the CEO uses task board dispatch (your dispatch will say `MODE: task-board`):
+
+1. Read the hive mind's Task Board section
+2. Assess your fit for each OPEN task:
+   - Check your pair's pheromone history — have you worked on these files before?
+   - Do you know the gotchas in this area?
+   - Is the estimated difficulty within your pair's track record?
+3. Claim a task by writing to your pair log:
+   ```
+   [YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [CLAIM] Task T001: [task name] — Fit: [reason you're suited]
+   ```
+4. Wait for CEO confirmation (CEO promotes claim to hive.md)
+5. Once confirmed, proceed with standard coder workflow
 
 ## What You Have Access To
 
@@ -535,6 +652,13 @@ Treat other operators' file claims exactly like your own CEO's pairs' claims —
 - When auditing: be thorough but not pedantic. Don't flag style preferences — flag bugs, security issues, pattern violations, and missing tests.
 
 ## After Task Completion
+
+### Pheromone Trail
+Before signaling DONE on your final round, write a pheromone summary to your pair log:
+```
+[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [PHEROMONE] Task: [task name] | Difficulty: [LOW|MEDIUM|HIGH] | Files: [count] | Duration: [estimated minutes] | Gotchas: [brief list of non-obvious issues encountered]
+```
+The CEO uses this to populate the hive mind's Pheromone Trails section, helping future pairs estimate difficulty and avoid known pitfalls.
 
 ### Learnings → Proposals
 
