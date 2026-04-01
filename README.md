@@ -141,22 +141,22 @@ You can check on them anytime:
 
 Team11 doesn't just write code — it builds institutional knowledge.
 
-### Daily Work Logs (`docs/logs/YYYY-MM-DD.md`)
+### Session Logs (`docs/logs/YYYY-MM-DD-pair-CEO.md`)
 
-After each completed subtask, the auditor writes a detailed knowledge entry to a per-pair daily log file that gets committed to git. These are permanent project documentation, not throwaway notes.
+Written ONCE at `/team11 standdown` — not during active work. The CEO compiles all pair logs into one clean session log.
 
-Each entry includes:
+**During work:** Agents write to their pair logs (`.team11/logs/pair-N.md`) in real time — cheap, no formatting overhead.
+
+**At standdown:** CEO reads all pair logs and compiles a single session log with:
 - **What was completed** (with file paths, checkboxes)
-- **Architecture decisions** — the full story: what situation we were in, what went wrong, what we chose, what alternatives we rejected and WHY, what the trade-offs are, what to watch out for
-- **Problem-solving scenarios** — the bug, why it was tricky, how we solved it, what to do next time
-- **Cost tracking** — API spend, token usage, infra costs
-- **Known issues** — prioritized TODO for tomorrow
+- **Architecture decisions** — full context, alternatives rejected and WHY
+- **Known issues** — prioritized TODO for next session
 
-**Style:** Written like you're explaining to a smart colleague who joins the team tomorrow. Specific file paths, line numbers, function names, actual math, actual error messages. Every decision section is self-contained.
+**Why at standdown, not per-subtask:** Zero token waste during active work. Pair logs already capture everything. One compilation pass with the full picture produces a better-organized document.
 
 ### README & Documentation Updates
 
-After every knowledge log entry, the CEO checks: did anything change how the project works? If yes, it updates README.md, CLAUDE.md, and relevant docs/ files in the same session. Documentation stays current with code — never "we'll document it later."
+After standdown, the CEO checks: did anything change how the project works? If yes, it updates README.md, CLAUDE.md, and relevant docs/ files. Documentation stays current with code.
 
 ### Skill & Memory Proposals (Human-Gated)
 
@@ -187,19 +187,22 @@ Proposals must be:
   ├── skills/team11/
   │   ├── SKILL.md                      # CEO orchestration manual
   │   ├── README.md                     # This document
-  │   └── agents/
-  │       └── coder-auditor.md          # Universal agent prompt (all 10 use this)
+  │   ├── agents/
+  │   │   └── coder-auditor.md          # Universal agent prompt (all 10 use this)
+  │   └── protocols/
+  │       └── connected-hive.md         # GitHub API sync protocol for connected mode
   └── commands/
       └── team11.md                     # /team11 slash command entry point
 
 <any-project>/                          # PER-PROJECT
   ├── .team11/                          # Ephemeral agent state (gitignored)
   │   ├── hive.md                       # Shared edit registry
+  │   ├── config.json                   # Mode config: solo (default) or connected
   │   ├── logs/pair-N.md                # Pair activity logs
   │   ├── findings/pair-N-round-M.md    # Audit reports for human review
   │   └── proposals/                    # Skill/memory proposals awaiting approval
   └── docs/logs/
-      └── YYYY-MM-DD.md                  # Daily work log (appended per subtask)
+      └── YYYY-MM-DD-pair-CEO.md         # Session log (compiled at standdown)
 ```
 
 **Key separation:**
@@ -235,7 +238,7 @@ To turn it off mid-task: `/team11 stop`
 
 ---
 
-## Full Command Reference (21 commands)
+## Full Command Reference (28 commands)
 
 ### Setup & Teardown (one-time per project)
 | Command | What It Does |
@@ -274,9 +277,23 @@ To turn it off mid-task: `/team11 stop`
 ### Knowledge & Documentation
 | Command | What It Does |
 |---------|-------------|
-| `/team11 log-today` | Display today's daily work log |
+| `/team11 log-today` | Display today's session log |
 | `/team11 project-prompt` | Display the project knowledge index |
 | `/team11 project-prompt init` | Deep codebase scan → generate initial project knowledge |
+
+### Session Control
+| Command | What It Does |
+|---------|-------------|
+| `/team11 standdown` | End persistent session. Compile session log. Go dormant. |
+
+### Connected Mode (Cross-Human)
+| Command | What It Does |
+|---------|-------------|
+| `/team11 connect` | Connect project to shared hive via GitHub `team11-coord` branch |
+| `/team11 connect join` | Join coworker's existing coordination branch |
+| `/team11 disconnect` | Switch back to solo mode (instant) |
+| `/team11 operators` | List registered operators and their active pairs |
+| `/team11 sync` | Force-refresh hive from GitHub |
 
 ### Meta
 | Command | What It Does |
@@ -319,11 +336,30 @@ Action needed: Approve / Reject / Modify
 
 Read the findings, then respond naturally: "approve", "reject, the query needs to use a CTE instead", etc.
 
-### End of Day
+### Persistent Session
 
 ```bash
-/team11 log-today       # see what's been documented today
+/team11 fix the login bug       # CEO activates, stays online
+now refactor the auth module    # no /team11 prefix needed
+status                          # shows hive + pair status
+/team11 standdown               # compiles session log, CEO goes dormant
 ```
+
+After the first `/team11 <task>`, the CEO stays active. You send tasks directly — no prefix needed. The CEO compiles the session log when you run standdown.
+
+### Connected Mode (Working with Coworkers)
+
+```bash
+/team11 connect                 # create team11-coord branch, register as operator
+# coworker runs:
+/team11 connect join            # joins your coordination branch
+
+# both dispatch tasks — shared hive prevents file collisions
+/team11 operators               # see who's connected and what they're working on
+/team11 disconnect              # back to solo mode instantly
+```
+
+Connected mode shares the hive mind via a `team11-coord` orphan branch on GitHub. No source code on the branch — just coordination state. Your coworker's agents see your file claims, and vice versa.
 
 ### Multi-Terminal Usage
 
@@ -472,5 +508,9 @@ This also enables version history for the prompts themselves — you can see how
 | `/team11 setup` | One-time worktree setup |
 | `/team11 reset all` | Reset between tasks |
 | `/team11 stop` | Graceful stop |
+| `/team11 standdown` | End session, compile log |
+| `/team11 connect` | Share hive with coworker |
+| `/team11 disconnect` | Back to solo mode |
+| `/team11 operators` | Who's connected? |
 | `/team11 teardown` | Remove worktrees |
 | `/team11 help` | All commands |

@@ -28,6 +28,7 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
 ```
 <project-root>/.team11/              # Ephemeral agent state (gitignored)
   ├── hive.md                        # CEO-maintained read-only summary (pairs READ, CEO WRITES)
+  ├── config.json                    # Mode config: solo (default) or connected
   ├── inboxes/
   │   ├── pair-1.md                  # CEO → Pair 1 messages (targeted, not broadcast)
   │   ├── pair-2.md                  # CEO → Pair 2 messages
@@ -410,8 +411,87 @@ Team11 is **manual-only**. It does nothing unless you invoke it. No auto-trigger
 | `/team11 project-prompt` | Display the current project prompt (`.team11/project-prompt.md`) |
 | `/team11 project-prompt init` | Auto-generate initial project prompt by scanning the codebase |
 | `/team11 help` | Show this command list |
+| `/team11 connect` | Connect this project to shared hive. Creates `team11-coord` orphan branch if needed. Registers operator. |
+| `/team11 connect join` | Join an existing `team11-coord` branch (coworker already created it). Register as operator. |
+| `/team11 disconnect` | Switch back to solo mode. Local hive only. Instant. |
+| `/team11 operators` | List all registered operators and their active pairs |
+| `/team11 sync` | Force-refresh hive from GitHub `team11-coord` branch |
+| `/team11 standdown` | End persistent session. CEO stops interpreting messages as tasks. Produces session summary. |
 
 **Important:** When Team11 is not invoked, it is completely inert. It consumes zero tokens, runs zero agents, and does not interfere with your normal Claude Code session.
+
+## Persistent Session Mode
+
+By default, each `/team11 <task>` invocation is one-shot: the CEO handles the task, reports results, and goes dormant. The user must re-invoke `/team11` for every subsequent task.
+
+**Persistent session mode** keeps the CEO active after the first task. The user's messages are interpreted as new tasks or instructions without needing the `/team11` prefix.
+
+### How It Works
+
+```
+User: /team11 fix the login bug          ← first invocation, CEO activates
+CEO:  [handles task, dispatches pairs]
+CEO:  SESSION ACTIVE — I'll keep running. Send tasks directly. /team11 standdown to end.
+
+User: now refactor the auth middleware    ← no /team11 prefix needed, CEO stays active
+CEO:  [handles as new task]
+
+User: status                             ← interpreted as /team11 status
+CEO:  [shows status]
+
+User: /team11 standdown                  ← ends session
+CEO:  [produces session summary, goes dormant]
+```
+
+### Activation
+
+Persistent session activates automatically on the **first `/team11 <task>`** invocation. The CEO announces it:
+```
+SESSION ACTIVE — Team11 CEO is online.
+Send tasks directly (no /team11 prefix needed).
+Commands: status, hive, watch, stop, findings, proposals
+End session: /team11 standdown
+```
+
+### What the CEO Does While Active
+
+- **Task messages** → decompose, dispatch pairs, run the full protocol
+- **Command-like messages** (status, hive, watch, stop, findings, etc.) → execute the command
+- **Questions about the work** → answer from hive mind + pair logs context
+- **Approval/rejection of findings** → relay to the relevant pair, continue the loop
+- **Non-Team11 messages** → if the message is clearly unrelated to Team11 work (e.g., "what time is it"), respond normally without Team11 overhead
+
+### `/team11 standdown` Protocol
+
+When the user ends the session:
+
+1. **Check for active pairs.** If any are still running:
+   ```
+   WARNING: 2 pairs still running (Pair 1: coding, Pair 3: auditing)
+   Options:
+     A) Wait for them to finish, then standdown
+     B) Stop all pairs and standdown now
+     C) Cancel standdown — keep session active
+   ```
+2. **Compile the session log.** This is when ALL logging happens — not during active work.
+   The CEO reads all pair logs (`.team11/logs/pair-*.md`) from this session and compiles them into a single session log at `docs/logs/YYYY-MM-DD-pair-CEO.md`:
+   - What each pair worked on (files, changes, reasoning)
+   - Audit findings and resolutions
+   - Architecture decisions made
+   - Known issues / TODO for next session
+   - Proposals pending review
+
+   **Why at standdown, not per-subtask:** Writing daily logs after each subtask burns tokens on formatting and file I/O while agents are actively working. Pair logs already capture the raw data in real time. Compiling once at standdown is cheaper and produces a better-organized document because the CEO has the full picture.
+
+3. **Produce the session summary** (same format as the existing Session Summary section) — display to user
+4. **Go dormant** — stop interpreting messages as tasks. The user must invoke `/team11` again to reactivate.
+
+### Rules
+
+- Persistent session is **per-conversation only** — it does not persist across Claude Code sessions. Each new conversation starts dormant.
+- The CEO does NOT auto-dispatch. It waits for the user to send tasks. Between tasks, it's idle but listening.
+- If the user switches to a completely different topic (non-coding, general questions), the CEO should respond normally without Team11 framing. Don't force everything through the orchestration protocol.
+- `/team11 standdown` is the ONLY way to end a persistent session. Closing the terminal or starting a new conversation also ends it implicitly.
 
 ## Operating Protocol
 
@@ -978,17 +1058,21 @@ All reads, writes, edits, tests, linting, git add/commit (in worktrees), branch 
 **Must ask user:**
 git push, PR create/merge, file deletion outside worktree, destructive git ops (reset, force push, rebase), production AWS operations, merging worktrees to main.
 
-## Daily Work Log
+## Session Log (Written at Standdown)
 
-**Per-pair log files:** `docs/logs/YYYY-MM-DD-pair-N.md`. Each pair writes to its own daily log — zero collision risk. The CEO writes to `docs/logs/YYYY-MM-DD-pair-CEO.md` for session summaries and architectural decisions.
+**Session log file:** `docs/logs/YYYY-MM-DD-pair-CEO.md`. Written ONCE at `/team11 standdown` — not during active work.
 
-**Workflow:** After a subtask is audited and the pair agrees it's clean:
-1. The auditor writes the log entry for that subtask (while the coder moves on to the next subtask)
-2. This means documentation happens in parallel with coding — no delay, no forgotten entries
+**Agents do NOT write daily logs during work.** They write to their pair logs (`.team11/logs/pair-N.md`) in real time — that's the raw data. At standdown, the CEO compiles all pair logs into one clean session log.
+
+**Why this is better:**
+- Zero token waste on log formatting during active work
+- Pair logs already capture everything in real time
+- The CEO has the full picture at standdown — produces a better-organized summary
+- One file per session instead of N files per pair per day
 
 Create `docs/logs/` if it doesn't exist.
 
-On first entry of the day, create the file with this header, then append entries throughout the day:
+**At standdown, the CEO creates the session log with this format:**
 ```markdown
 # Work Log — [Month Day, Year]
 
@@ -1061,11 +1145,11 @@ On first entry of the day, create the file with this header, then append entries
 - If you discovered a gotcha, explain the full scenario that triggers it
 - Every architectural decision section should be self-contained — readable without any other document
 
-Entries are appended throughout the day as subtasks complete. The daily log builds itself organically — no combining step needed.
+The CEO compiles this log from all pair logs at standdown. One pass, one file, complete picture.
 
 ### README & Documentation Updates
 
-After every log entry, check: **did this subtask change how the project works, how to set it up, or how to use it?** If yes:
+After standdown, check: **did this session change how the project works, how to set it up, or how to use it?** If yes:
 
 1. Update the project's `README.md` with the new information
 2. Update `CLAUDE.md` if the change affects development workflow, CLI commands, architecture, or conventions
@@ -1278,3 +1362,205 @@ At end of session, produce:
 ```
 
 Ensure the daily log has its final entries for all completed subtasks.
+
+## Connected Mode (Cross-Human Collaboration)
+
+Connected mode allows multiple humans to run Team11 on the same GitHub repo from different machines. Their agents share one hive mind so file claims are visible across all operators — preventing collisions and regressions.
+
+**Key principle:** Connected mode is opt-in, per-project. When disconnected, Team11 works exactly as it always has — local hive, local pairs, zero network calls.
+
+### Solo vs Connected
+
+| Aspect | Solo (default) | Connected |
+|--------|---------------|-----------|
+| Hive mind | `.team11/hive.md` (local, gitignored) | `team11-coord` branch on GitHub (shared) |
+| Pair naming | `pair-1` | `{prefix}-pair-1` (e.g., `cs-pair-1`) |
+| File claims | Visible to local CEO only | Visible to ALL operators' CEOs |
+| Project prompt | Local `.team11/project-prompt.md` | Shared on `team11-coord` branch |
+| Knowledge base | Local `.team11/knowledge/` | Shared on `team11-coord` branch |
+| Pair logs | Local `.team11/logs/pair-N.md` | Synced to `team11-coord: logs/{prefix}-pair-N.md` |
+| Inboxes | Local (CEO → own pairs) | LOCAL only (never shared) |
+| Findings | Local (human reviews own agents) | LOCAL only (never shared) |
+| Worktrees | Local machine | LOCAL only (never shared) |
+| Config | `.team11/config.json` | LOCAL only |
+
+### Configuration (`.team11/config.json`)
+
+Default (solo):
+```json
+{
+  "mode": "solo",
+  "operator": null,
+  "repo": null
+}
+```
+
+When connected:
+```json
+{
+  "mode": "connected",
+  "operator": {
+    "name": "CyberStein",
+    "github": "CyberStein",
+    "prefix": "cs",
+    "pairs": [1, 2, 3, 4, 5]
+  },
+  "repo": "eoc-gengine/loopborn"
+}
+```
+
+**Mode check:** Before every hive read/write, check `config.json`. If `mode: "solo"`, use local `.team11/hive.md`. If `mode: "connected"`, use the sync protocol from `protocols/connected-hive.md`.
+
+### `/team11 connect` Protocol
+
+One-time per project. Creates the coordination infrastructure.
+
+1. Determine repo from `git remote get-url origin`
+2. Check if `team11-coord` branch already exists on remote — if yes, tell user to use `connect join`
+3. Create orphan branch `team11-coord` via GitHub API with initial `hive.md`
+4. Register this operator by creating `operators/{name}.json` on `team11-coord`
+5. Save local `.team11/config.json`
+
+**The CEO must ask the user for:**
+- Display name (default: git config user.name)
+- Short prefix (2-3 chars, e.g., "cs" for CyberStein, "owl" for oldworldlab)
+- Number of pairs (default: 5)
+
+**Branch creation via GitHub API (no local checkout needed):**
+```bash
+REPO="owner/repo"  # from git remote
+
+# Create hive.md on new orphan branch
+gh api repos/$REPO/contents/hive.md \
+  -X PUT \
+  -f message="init: team11 coordination branch" \
+  -f content="$(printf '# Hive Mind — Connected\n**Repo:** %s\n**Type:** connected-hive-mind\n\n## Operators\n| Operator | Prefix | Pairs | Last Active |\n|----------|--------|-------|-------------|\n\n## Active Edits\n| Operator | Pair | File | Action | Status | Timestamp |\n|----------|------|------|--------|--------|-----------|\n| — | — | — | No active tasks | idle | — |' "$REPO" | base64)" \
+  -f branch="team11-coord"
+
+# Register operator
+gh api repos/$REPO/contents/operators/${NAME}.json \
+  -X PUT \
+  -f message="register operator: ${NAME}" \
+  -f content="$(printf '{"name":"%s","github":"%s","prefix":"%s","pairs":[1,2,3,4,5],"registered":"%s"}' "$NAME" "$GITHUB" "$PREFIX" "$(date -I)" | base64)" \
+  -f branch="team11-coord"
+```
+
+Report after connect:
+```
+TEAM11 CONNECTED
+  Repo: eoc-gengine/loopborn
+  Branch: team11-coord (created)
+  Operator: CyberStein (prefix: cs)
+  Pairs: cs-pair-1 through cs-pair-5
+  Mode: connected
+
+Your coworker can now run: /team11 connect join
+```
+
+### `/team11 connect join` Protocol
+
+Join an existing coordination branch.
+
+1. Verify `team11-coord` exists on remote — if not, tell user to ask coworker to run `/team11 connect` first
+2. Read existing operators to avoid prefix collision
+3. Register this operator (same as connect step 4)
+4. Download shared `project-prompt.md` and `knowledge/` if they exist
+5. Save local `.team11/config.json`
+
+### `/team11 disconnect` Protocol
+
+Instant switch back to solo mode.
+
+1. Update local `config.json` to `"mode": "solo"`
+2. Copy current shared hive to local hive (so you don't lose context mid-task)
+3. Remove this operator's active edits from the shared hive (courtesy cleanup)
+4. The `team11-coord` branch stays on GitHub — coworker's agents still use it
+
+### `/team11 operators` Output
+
+```
+TEAM11 OPERATORS — eoc-gengine/loopborn
+
+| Operator | Prefix | Pairs | Last Active | Status |
+|----------|--------|-------|-------------|--------|
+| CyberStein | cs | 1-5 | 2026-04-01 14:32 | active (2 pairs running) |
+| oldworldlab | owl | 1-5 | 2026-04-01 14:30 | active (1 pair running) |
+```
+
+### Hive Mind in Connected Mode
+
+In connected mode, the hive mind table includes an **Operator** column:
+
+```markdown
+## Active Edits
+| Operator | Pair | File | Action | Status | Timestamp |
+|----------|------|------|--------|--------|-----------|
+| cs | cs-pair-1 | client-game/src/ui/HUD.js | Refactoring layout | coding | 14:32 |
+| owl | owl-pair-1 | nakama/src/combat.ts | Fix boss AI | auditing | 14:30 |
+```
+
+**File claim checking in connected mode:**
+Before dispatching any pair, the CEO reads the shared hive and checks:
+1. Is ANY operator's pair (including other humans' pairs) already claiming this file? → BLOCK
+2. If blocked: wait, re-scope, or ask the human
+
+This is the core anti-regression mechanism — no two agents across ANY operator can touch the same file simultaneously.
+
+### Sync Protocol
+
+See `protocols/connected-hive.md` for the detailed sync protocol using GitHub API.
+
+**Summary:**
+- **Read:** `gh api` to fetch `hive.md` from `team11-coord` branch (no checkout needed)
+- **Write:** `gh api` PUT with SHA-based optimistic locking (prevents overwrites)
+- **Conflict:** If SHA changed between read and write, re-read and retry (max 3 retries)
+- **Frequency:** Sync before every dispatch and after every merge
+
+### Connected Mode Changes to Operating Protocol
+
+These are the ONLY changes to the existing protocol. Everything else stays identical.
+
+**Step 3 (Initialize State):** If `config.json` exists and `mode: "connected"`:
+- Read hive from `team11-coord` instead of local file
+- Use operator-prefixed pair names in all hive entries
+
+**Step 4 (Dispatch):** If connected:
+- Sync hive from GitHub before reading
+- Include operator prefix in pair identity: `{prefix}-pair-{N}`
+- After updating hive with new pair's claim, push to GitHub
+
+**Step 6 (Merge):** If connected:
+- After merging to main and pushing, update shared hive to remove pair's file claims
+- Other operators' CEOs will see freed files on next sync
+
+### Shared Knowledge Sync
+
+When connected, project knowledge (`project-prompt.md` + `knowledge/`) is shared via `team11-coord`:
+
+- **On connect:** Download existing shared knowledge if it exists; upload local if shared is empty
+- **On proposal approval:** Upload updated knowledge file to `team11-coord`
+- **On `/team11 sync`:** Refresh local knowledge from shared
+
+Both operators get the same project knowledge base — agents on both machines see the same gotchas, patterns, and constraints.
+
+### Offline / Degraded Mode
+
+If the GitHub API is unreachable (network down, rate limited):
+1. Fall back to local hive (solo mode behavior)
+2. Log warning: `[CEO] WARNING: GitHub API unreachable — operating in degraded solo mode`
+3. Retry on next dispatch
+4. When connectivity returns, sync local hive to remote (merge, don't overwrite)
+
+Network issues never block work entirely. The cost is temporary loss of cross-operator visibility.
+
+### Security Notes
+
+- `team11-coord` branch contains NO source code — only coordination state
+- Pair logs contain file paths and change descriptions, but never file contents
+- `gh` CLI uses the user's existing GitHub authentication — no new credentials
+- Operator registration uses GitHub username for identity — no shared secrets
+- The branch can be protected via GitHub branch protection rules
+
+### Rate Limiting
+
+GitHub API: 5000 requests/hour authenticated. Team11 connected mode uses ~50-100 calls/hour per operator (2 per hive read, 1 per write, 1 per log sync, 1 per heartbeat). Well within limits.
