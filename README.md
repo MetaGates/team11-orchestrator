@@ -29,6 +29,14 @@ You (human)
 
 Each pair: 2 identical agents that alternate coding and auditing.
 All run in background. You keep working. They surface findings to you.
+
+After each pair completes, CEO dispatches:
+  ┌────────────┐
+  │  Secretary │  post-merge housekeeping
+  │  (opus)    │  → processes OUTBOX entries from pair log
+  └────────────┘  → writes facts/pheromones/gotchas to memory.db
+                  → triggers Turso cloud sync
+                  → renders fresh hive.md
 ```
 
 ## How It Works (Step by Step)
@@ -105,7 +113,11 @@ You can:
 - **Reject** → pair starts over with your feedback
 - **Modify** → you give specific guidance, pair adjusts
 
-### 6. The Hive Mind
+### 6. After Merge — Secretary Runs
+
+After every pair merge, CEO dispatches a Secretary agent (background, opus). Secretary reads the pair's log for `[OUTBOX:*]` entries, writes them to `memory.db` via the `write-and-sync.js` script (which triggers Turso cloud sync so coworkers see new facts within 60s), updates `pheromones.json` and `verdicts.json`, and renders a fresh `hive.md` from DB state. CEO does NOT manually update these files — Secretary handles all of it.
+
+### 7. The Hive Mind
 
 When multiple pairs work simultaneously, they need to know what each other is doing. The hive mind (`.team11/hive.md`) is a shared file that every agent reads before editing and writes to after editing:
 
@@ -120,7 +132,7 @@ If Pair 2 sees Pair 1 is changing the schema their hook depends on, they coordin
 
 **Isolation:** The hive mind lives in `<project>/.team11/hive.md` — scoped to THIS project. Two terminals working on two different projects have completely separate hive minds. No interference.
 
-### 7. Background Execution
+### 8. Background Execution
 
 All agents run in background. Your main Claude session stays fully interactive — you can ask questions, edit files, run commands, start a completely different conversation.
 
@@ -188,7 +200,8 @@ Proposals must be:
   │   ├── SKILL.md                      # CEO orchestration manual
   │   ├── README.md                     # This document
   │   ├── agents/
-  │   │   └── coder-auditor.md          # Universal agent prompt (all 10 use this)
+  │   │   ├── coder-auditor.md          # Universal agent prompt (all 10 use this)
+  │   │   └── secretary.md              # Secretary agent prompt
   │   └── protocols/
   │       └── connected-hive.md         # GitHub API sync protocol for connected mode
   └── commands/
@@ -196,11 +209,18 @@ Proposals must be:
 
 <any-project>/                          # PER-PROJECT
   ├── .team11/                          # Ephemeral agent state (gitignored)
-  │   ├── hive.md                       # Shared edit registry
+  │   ├── hive.md                       # Shared edit registry (rendered by Secretary)
   │   ├── config.json                   # Mode config: solo (default) or connected
   │   ├── logs/pair-N.md                # Pair activity logs
   │   ├── findings/pair-N-round-M.md    # Audit reports for human review
-  │   └── proposals/                    # Skill/memory proposals awaiting approval
+  │   ├── proposals/                    # Skill/memory proposals awaiting approval
+  │   ├── memory.db                     # SQLite — facts, pheromones, gotchas, contradictions
+  │   ├── mcp-server/                   # Scripts: write-and-sync.js, dist/
+  │   ├── checkpoints/                  # Crash recovery state per pair
+  │   │   └── pair-N-checkpoint.json
+  │   ├── stale/                        # Archived knowledge below 25% confidence
+  │   ├── pheromones.json               # Extended pheromone trail data
+  │   └── _outbox.json                  # Temp file (Secretary uses during processing)
   └── docs/logs/
       └── YYYY-MM-DD-pair-CEO.md         # Session log (compiled at standdown)
 ```
@@ -209,6 +229,29 @@ Proposals must be:
 - Global plugin (`~/.claude/skills/team11/`) — the system itself. Portable, works everywhere.
 - Per-project state (`.team11/`) — ephemeral working data. Gitignored. Isolated per project.
 - Session logs (`docs/logs/YYYY-MM-DD-pair-CEO.md`) — compiled by CEO at standdown from pair logs. Committed to git.
+
+---
+
+## Persistent Memory
+
+Facts, pheromones, and gotchas discovered during work live in `memory.db` (SQLite), located at `<project>/.team11/memory.db`. The Secretary writes to this DB via `write-and-sync.js`, which also triggers a Turso cloud sync. In connected mode, coworkers see new facts within 60 seconds of the sync.
+
+The DB is the source of truth. `hive.md`, `pheromones.json`, and `verdicts.json` are rendered views — Secretary regenerates them from DB state after each pair completion. Never edit them by hand.
+
+---
+
+## Knowledge Lifecycle
+
+Facts in `memory.db` are not permanent by default — they decay to prevent stale knowledge from biasing future work.
+
+- **Initial confidence:** 100% when a fact is first stored
+- **Decay rate:** 5% per week if no pair re-confirms the fact
+- **Re-confirmation:** A pair writing `[OUTBOX:REINFORCED]` in their log resets the decay timer
+- **50% threshold:** Fact is flagged for re-verification. Appears in `/team11 status` output so the next relevant task picks it up.
+- **25% threshold:** Fact is archived to `.team11/stale/`. Not deleted — can be restored if proven correct again.
+- **Decay calculation:** CEO runs the decay pass at `/team11 standdown`
+
+This ensures the hive mind reflects what is currently true, not just what was true six months ago.
 
 ---
 
@@ -238,7 +281,7 @@ To turn it off mid-task: `/team11 stop`
 
 ---
 
-## Full Command Reference (28 commands)
+## Full Command Reference (30 commands)
 
 ### Setup & Teardown (one-time per project)
 | Command | What It Does |
@@ -246,6 +289,9 @@ To turn it off mid-task: `/team11 stop`
 | `/team11 setup` | Create 5 permanent worktrees + install deps. Auto-prompted on first use. |
 | `/team11 setup <N>` | Create only N worktrees (e.g., `setup 3`) |
 | `/team11 teardown` | Remove all permanent worktrees (frees disk). Safe on Windows (uses `git worktree remove`). |
+
+> **CRITICAL on Windows:** Never delete worktrees with `rm -rf` or PowerShell `Remove-Item -Recurse`. pnpm creates NTFS junctions in `node_modules` — PowerShell and MSYS bash **follow junctions and delete target directories**, which can permanently destroy `Documents/`, `Downloads/`, etc.
+> **Safe deletion only via:** `git worktree remove <path>` or `cmd.exe /c "rmdir /S /Q <path>"`
 
 ### Task Execution
 | Command | What It Does |
@@ -256,6 +302,12 @@ To turn it off mid-task: `/team11 stop`
 | `/team11 stop` | Graceful stop: agents commit WIP, then halt. Worktrees persist. |
 | `/team11 stop pair <N>` | Stop only pair N |
 | `/team11 recover` | Detect crashed pairs, assess damage, present recovery options |
+
+### Swarm Modes
+| Command | What It Does |
+|---------|-------------|
+| `/team11 swarm-debug <bug>` | All 5 pairs independently investigate a hard bug — converge on root cause, human picks hypothesis to pursue |
+| `/team11 research <topic>` | All 5 pairs research a topic from different angles, cross-pollinating findings via hive mind |
 
 ### Monitoring & Live View
 | Command | What It Does |
@@ -284,7 +336,13 @@ To turn it off mid-task: `/team11 stop`
 ### Session Control
 | Command | What It Does |
 |---------|-------------|
-| `/team11 standdown` | End persistent session. Compile session log. Go dormant. |
+| `/team11 standdown` | End persistent session. Compile session log. Run decay pass. Go dormant. |
+
+### Diagnostics & Costs
+| Command | What It Does |
+|---------|-------------|
+| `/team11 costs` | Token cost breakdown per pair, per task, and session totals |
+| `/team11 test-prompt` | Run a small known task to evaluate whether project-prompt.md is effective |
 
 ### Connected Mode (Cross-Human)
 | Command | What It Does |
@@ -427,9 +485,29 @@ CEO writes → inboxes/pair-N.md (targeted messages to specific pairs)
 Pairs write → logs/pair-N.md (their own activity log)
 Pairs write → findings/pair-N-round-M.md (audit reports)
 Pairs write → proposals/*.md (knowledge proposals for human review)
+
+Secretary reads → logs/pair-N.md (processes [OUTBOX:*] entries)
+Secretary writes → memory.db (via write-and-sync.js)
+Secretary writes → hive.md (rendered from DB state)
+Secretary writes → pheromones.json, verdicts.json
 ```
 
-No shared-write files. Zero concurrency issues.
+No shared-write files between pairs. Zero concurrency issues.
+
+### OUTBOX Entries (Pairs → Secretary)
+
+Pairs communicate discovered knowledge to Secretary by writing structured log entries prefixed `[OUTBOX:*]`. Secretary reads these after each completion and persists them to `memory.db`.
+
+| Entry Type | Purpose |
+|------------|---------|
+| `[OUTBOX:FACT]` | New discovered fact about the codebase |
+| `[OUTBOX:PHEROMONE]` | Task difficulty/duration data for future estimates |
+| `[OUTBOX:GOTCHA]` | Non-obvious pitfall encountered |
+| `[OUTBOX:CONTRADICTION]` | Finding that conflicts with existing hive knowledge |
+| `[OUTBOX:REINFORCED]` | Re-confirmation of an existing fact (resets decay timer) |
+| `[OUTBOX:RELEASE_FILES]` | Signal to release file claims in the DB |
+
+Pairs do not write directly to `memory.db`. All DB writes flow through Secretary to ensure Turso sync is triggered.
 
 ---
 
@@ -439,12 +517,18 @@ No shared-write files. Zero concurrency issues.
 |-----------|-------------|
 | Agent fails a task | CEO re-dispatches with more specific instructions |
 | Agent fails twice | CEO surfaces to you with diagnosis |
-| Agent crashes | `/team11 recover` — assess damage, present options |
+| Agent crashes | `/team11 recover` reads `.team11/checkpoints/pair-N-checkpoint.json` to resume from last known phase, not from scratch |
 | Merge conflict | CEO surfaces both sides to you for resolution |
 | MCP unavailable | Agent falls back to built-in tools |
 | Human rejects | Pair restarts with your feedback via mailbox |
 | Agent stuck 3+ attempts | Switches to competing-hypothesis debugging |
 | Graceful stop | Agents commit WIP, write partial findings, then halt |
+
+### Checkpoint System
+
+Each pair writes a checkpoint file at key phases: `<project>/.team11/checkpoints/pair-N-checkpoint.json`.
+
+The checkpoint contains: current phase, task description, files modified, files remaining, context notes, and the last commit SHA. If a pair crashes, `/team11 recover` reads the checkpoint and resumes from the last known state rather than starting over. Checkpoint files are deleted after a successful merge.
 
 ---
 
@@ -508,9 +592,13 @@ This also enables version history for the prompts themselves — you can see how
 | `/team11 setup` | One-time worktree setup |
 | `/team11 reset all` | Reset between tasks |
 | `/team11 stop` | Graceful stop |
-| `/team11 standdown` | End session, compile log |
+| `/team11 standdown` | End session, compile log, run decay pass |
 | `/team11 connect` | Share hive with coworker |
 | `/team11 disconnect` | Back to solo mode |
 | `/team11 operators` | Who's connected? |
-| `/team11 teardown` | Remove worktrees |
+| `/team11 teardown` | Remove worktrees (see Windows warning above) |
+| `/team11 swarm-debug <bug>` | All pairs investigate a hard bug |
+| `/team11 research <topic>` | All pairs research from different angles |
+| `/team11 costs` | Token cost breakdown |
+| `/team11 test-prompt` | Evaluate project-prompt.md effectiveness |
 | `/team11 help` | All commands |

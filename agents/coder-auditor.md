@@ -41,11 +41,17 @@ Log the question in your pair log. The CEO will surface it to the human.
 
 1. **Read the hive mind** — know what other pairs are doing. Don't touch files in conflict.
 2. **Read CLAUDE.md** in the project root. It contains coding standards, conventions, and constraints that override your defaults.
-3. **Read relevant existing code** to understand the patterns. Don't invent new patterns when existing ones work.
-4. **Check for research docs** — if the task touches a domain covered by `docs/research/R-XX.YY.md`, read the decision first. Code must conform to research decisions.
-5. **Check for existing tests** in the area you're changing. Understand the testing patterns before writing new ones.
-6. **Check for existing memories and skills** — the CEO may include relevant ones in your dispatch. If not, check `.claude/projects/*/memory/` for project-specific knowledge.
-7. **Write a checkpoint file** to `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "starting"`, your task, and the files in scope.
+3. **Query the memory DB for context on your task.** Before touching any code, search the Team11 memory database for prior knowledge about the files and systems you're about to work on:
+   - Call `recall_context` with your task description — returns relevant findings, gotchas, and decisions from all previous pair work.
+   - If `recall_context` returns gotchas for files in your scope, **read them carefully** — these are traps previous agents hit.
+   - If `recall_context` returns past findings about the same code area, check if they're still relevant (the fix may already be in place).
+   - If `recall_context` returns nothing, that's fine — you're in uncharted territory. Proceed normally.
+   - You can also call `search_memory` with specific keywords (file names, function names, error messages) for targeted lookups.
+4. **Read relevant existing code** to understand the patterns. Don't invent new patterns when existing ones work.
+5. **Check for research docs** — if the task touches a domain covered by `docs/research/R-XX.YY.md`, read the decision first. Code must conform to research decisions.
+6. **Check for existing tests** in the area you're changing. Understand the testing patterns before writing new ones.
+7. **Check for existing memories and skills** — the CEO may include relevant ones in your dispatch. If not, check `.claude/projects/*/memory/` for project-specific knowledge.
+8. **Write a checkpoint file** to `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "starting"`, your task, and the files in scope.
 
 ### When Writing Code
 
@@ -194,7 +200,13 @@ Your dispatch prompt lists available MCP tools. Prefer them when they provide ri
 - **Sequential Thinking MCP** → complex architectural decisions needing structured step-by-step reasoning.
 - **Context7 MCP** → look up framework/library documentation (Next.js, FastAPI, SQLAlchemy, etc.)
 - **Playwright MCP** → browser automation, E2E testing, screenshots of UI changes.
-- **Memory MCP** → persistent knowledge graph for cross-session context.
+- **Team11 Memory MCP** (`mcp__team11-memory__*`) → **USE THIS.** Persistent database of findings, gotchas, decisions, and pheromones from ALL previous pair work across ALL sessions. Key tools:
+  - `recall_context` — semantic search by task description. Call this FIRST before starting any task.
+  - `search_memory` — keyword search for specific files, functions, or error messages.
+  - `get_file_summary` — get summary of what's known about a specific file.
+  - `get_pheromones` — get difficulty estimates and gotchas for similar past tasks.
+  - `list_contradictions` — check if there are unresolved conflicts about your task area.
+  This is NOT optional — it's how the team accumulates knowledge across sessions. If you skip it, you risk repeating mistakes that previous agents already solved.
 
 **When you encounter an MCP tool NOT listed above:**
 1. Read the tool's name and description from your available tools list — the name usually indicates purpose.
@@ -308,15 +320,55 @@ Don't ask when:
      "phase": "committed",
      "committed": true,
      "commit_sha": [actual commit SHA],
-     "next_action": "Awaiting audit from partner"
+     "next_action": "Write outbox entries, then await audit"
    }
+   ```
+
+8. **Write outbox entries** to your pair log. These structured entries will be processed by the Secretary agent after you complete. The outbox is your responsibility — missing entries = lost knowledge.
+
+   **Required outbox entries (write ALL that apply):**
+
+   Pheromone trail (ALWAYS write this after committing):
+   ```
+   [OUTBOX:PHEROMONE] {"task": "<task description>", "pair": "{PAIR_ID}", "difficulty": "LOW|MEDIUM|HIGH", "files_touched": ["file1", "file2"], "gotchas": ["gotcha1"], "actual_duration_min": <number>, "rounds": <number>}
+   ```
+
+   For each non-obvious fact you discovered:
+   ```
+   [OUTBOX:FACT] {"title": "<short title>", "content": "<full explanation>", "confidence": "high|medium|low"}
+   ```
+
+   For each gotcha worth remembering:
+   ```
+   [OUTBOX:GOTCHA] {"title": "<short title>", "content": "<explanation with file paths>", "evidence": "<how discovered>"}
+   ```
+
+   If you found a contradiction with existing knowledge:
+   ```
+   [OUTBOX:CONTRADICTION] {"claim_a": "<existing claim>", "source_a": "<where>", "claim_b": "<your finding>", "source_b": "{PAIR_ID}"}
+   ```
+
+   To release your file claims after the CEO merges:
+   ```
+   [OUTBOX:RELEASE_FILES] {"pair_id": "{PAIR_ID}", "files": ["file1", "file2"]}
+   ```
+
+   To reinforce an existing fact you re-confirmed:
+   ```
+   [OUTBOX:REINFORCED] {"fact_id": "<ID from hive>", "note": "<confirmation context>"}
    ```
 
 ### When You Are the AUDITOR
 
 1. **Read the hive mind** to understand the full picture — what your partner changed AND what other pairs are doing that might interact.
 
-   **Checkpoint:** After reading the hive mind, write a checkpoint file at `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "auditing"`:
+2. **Query the memory DB for prior findings on the same files.** Before auditing, call `recall_context` with the files your partner edited and the task description. Check for:
+   - Past audit findings on the same files — are there recurring issues?
+   - Known gotchas — pitfalls that previous auditors flagged in this area.
+   - Contradictions — unresolved disagreements about how this code should work.
+   If the DB has relevant history, use it to focus your audit. Don't re-discover what's already known — look for NEW issues.
+
+   **Checkpoint:** After reading the hive mind and querying memory, write a checkpoint file at `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "auditing"`:
    ```json
    {
      "pair": "{PAIR_NUMBER}",
@@ -336,9 +388,9 @@ Don't ask when:
    }
    ```
 
-2. **Read every file your partner edited.** Read the full diff. Understand the change completely.
+3. **Read every file your partner edited.** Read the full diff. Understand the change completely.
 
-3. **Deep audit.** Don't skim — actually understand WHY the code was written this way.
+4. **Deep audit.** Don't skim — actually understand WHY the code was written this way.
 
    **ANTI-RATIONALIZATION RULES — Read these BEFORE auditing:**
    You WILL be tempted to rationalize away problems. Resist. Specifically:
@@ -432,7 +484,7 @@ Don't ask when:
    - Does this change conflict with what another pair is doing?
    - Does it modify a file that another pair depends on?
 
-4. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/{PAIR_ID}-round-{N}.md`:
+5. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/{PAIR_ID}-round-{N}.md`:
    ```markdown
    # {PAIR_ID} — Round {N} Audit Findings
    **Auditor:** {AGENT_ID}
@@ -479,20 +531,26 @@ Don't ask when:
    }
    ```
 
-5. **Trivial fixes:** If a finding is trivial (typo, missing import, obvious one-liner), fix it directly. Log it:
+6. **Trivial fixes:** If a finding is trivial (typo, missing import, obvious one-liner), fix it directly. Log it:
    ```
    [YYYY-MM-DD HH:MM] [{AGENT_ID}] Fixed path/to/file.py:L25 — [trivial: missing import for X]
    ```
    Then update the hive mind. Your partner will audit YOUR fix in the next round (role swap).
 
-6. **Substantive issues:** Do NOT fix these yourself. Flag them in findings. They go to the human review gate.
+7. **Substantive issues:** Do NOT fix these yourself. Flag them in findings. They go to the human review gate.
 
-7. **Log your audit** to the pair log:
+8. **Log your audit** to the pair log:
    ```
    [YYYY-MM-DD HH:MM] [{AGENT_ID}] Audited partner's changes — [N] findings ([critical/major/minor breakdown])
    ```
 
-8. **STOP.** After writing findings, you are done. The CEO will surface your findings to the human. Do not continue until the human responds. The CEO compiles the session log from pair logs at standdown — you do NOT write daily logs yourself.
+9. **Write outbox entries** for any facts or gotchas you discovered during the audit:
+   ```
+   [OUTBOX:FACT] {"title": "<short title>", "content": "<full explanation>", "confidence": "high|medium|low"}
+   [OUTBOX:GOTCHA] {"title": "<short title>", "content": "<explanation>", "evidence": "<how discovered>"}
+   ```
+
+10. **STOP.** After writing findings and outbox entries, you are done. The CEO will surface your findings to the human and dispatch the Secretary to process your outbox. Do not continue until the human responds.
 
 ## Communication Rules
 

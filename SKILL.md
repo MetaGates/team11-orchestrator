@@ -716,9 +716,11 @@ CONTEXT: [relevant code snippets, decisions, patterns to follow]
 CLAUDE.MD CONSTRAINTS: [paste any relevant constraints from the project's CLAUDE.md]
 RESEARCH DOCS: [if the task touches a domain with an R-XX.YY.md decision, reference it]
 
-Before dispatching, the CEO SHOULD call `recall_context` with the task description to retrieve
+Before dispatching, the CEO MUST call `recall_context` with the task description to retrieve
 relevant prior knowledge. Include the results in the dispatch prompt's CONTEXT section.
-This replaces bulk file reads with targeted context retrieval.
+This is NOT optional — it's how the team avoids repeating past mistakes.
+Also call `get_pheromones` to check difficulty estimates for similar past tasks.
+Include ALL relevant recall results in the CONTEXT section of the dispatch.
 
 IMPORTANT — NEVER DELEGATE UNDERSTANDING:
 The CEO must have synthesized all research and context into THIS prompt before
@@ -872,6 +874,25 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
 7. Loop until pair agrees + human approves
 
 8. CEO merges worktree to main branch
+
+9. CEO dispatches Secretary agent (background, opus):
+   ```
+   Read and follow the agent prompt at ~/.claude/skills/team11/agents/secretary.md exactly.
+   
+   PAIR_ID: [pair that just completed]
+   PROJECT_ROOT: [absolute path]
+   EVENT: [coder_done|auditor_done|merge_done|round_complete]
+   PAIR_LOG_PATH: [path to pair log]
+   ```
+   
+   The Secretary handles ALL post-merge housekeeping:
+   - Processes [OUTBOX:*] entries from pair log → writes to DB
+   - Updates pheromones.json and verdicts.json
+   - Renders hive.md from DB state
+   - Marks entries as processed
+   
+   The CEO does NOT need to manually update hive.md, pheromones.json, or verdicts.json.
+   The Secretary handles it. The CEO just dispatches it — one line, cannot forget.
 ```
 
 **The auditing agent MUST stop and surface findings.** Never auto-approve. Never skip the human gate.
