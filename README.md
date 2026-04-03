@@ -30,13 +30,14 @@ You (human)
 Each pair: 2 identical agents that alternate coding and auditing.
 All run in background. You keep working. They surface findings to you.
 
-After each pair completes, CEO dispatches:
+Each pair is deployed alongside a paired Secretary:
   ┌────────────┐
-  │  Secretary │  post-merge housekeeping
-  │  (opus)    │  → processes OUTBOX entries from pair log
+  │  Secretary │  watches pair log for [PAIR:COMPLETE] markers
+  │  (opus)    │  → processes OUTBOX entries each time CEO signals
   └────────────┘  → writes facts/pheromones/gotchas to memory.db
                   → triggers Turso cloud sync
                   → renders fresh hive.md
+                  → exits on [PAIR:COMPLETE event=shutdown]
 ```
 
 ## How It Works (Step by Step)
@@ -113,9 +114,13 @@ You can:
 - **Reject** → pair starts over with your feedback
 - **Modify** → you give specific guidance, pair adjusts
 
-### 6. After Merge — Secretary Runs
+### 6. Secretary — Always Watching
 
-After every pair merge, CEO dispatches a Secretary agent (background, opus). Secretary reads the pair's log for `[OUTBOX:*]` entries, writes them to `memory.db` via the `write-and-sync.js` script (which triggers Turso cloud sync so coworkers see new facts within 60s), updates `pheromones.json` and `verdicts.json`, and renders a fresh `hive.md` from DB state. CEO does NOT manually update these files — Secretary handles all of it.
+When the CEO dispatches a pair, it simultaneously dispatches a Secretary agent for that pair. Secretary runs in background and **watches the pair log** for `[PAIR:COMPLETE event=X]` markers — polling every 30 seconds. Each time the CEO writes a marker (after coder done, auditor done, merge), Secretary wakes up, processes all new `[OUTBOX:*]` entries from the log, writes them to `memory.db` via `write-and-sync.js` (which triggers Turso cloud sync within 60s), updates `pheromones.json` and `verdicts.json`, and renders a fresh `hive.md`. Then it goes back to watching.
+
+Secretary exits when it sees `[PAIR:COMPLETE event=shutdown]`.
+
+CEO does NOT need to remember to call Secretary — it's already running alongside every pair. CEO just writes the marker.
 
 ### 7. The Hive Mind
 

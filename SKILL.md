@@ -683,8 +683,23 @@ For each pair N:
   3. Update hive mind with Pair N's assignment + background task ID
   4. Deploy Pair N agent (background)
      → "Pair N deployed. Pair N+1 standing by..."
-  5. Next pair (sees Pair N in hive mind)
+  5. Immediately deploy Secretary for Pair N (background) — it waits for the pair to finish
+     → Secretary watches the pair log for [PAIR:COMPLETE] markers and processes each one
+  6. Next pair (sees Pair N in hive mind)
 ```
+
+**Secretary is dispatched alongside every pair, not after merge.** This guarantees Secretary always runs — the CEO doesn't need to remember to call it. Secretary stays dormant until the pair writes a completion marker, then processes the OUTBOX entries for that event.
+
+**Secretary dispatch template** (sent immediately after deploying each pair):
+```
+Read and follow the agent prompt at ~/.claude/skills/team11/agents/secretary.md exactly.
+
+PAIR_ID: [pair-N]
+PROJECT_ROOT: [absolute path to main repo]
+PAIR_LOG_PATH: [PROJECT_ROOT]/.team11/logs/pair-N.md
+WATCH_MODE: true
+```
+In WATCH_MODE, Secretary polls the pair log every 30 seconds for new `[PAIR:COMPLETE event=X]` markers and processes each one as it appears. It exits when it sees `[PAIR:COMPLETE event=shutdown]`.
 
 Each pair is launched using the `Agent` tool with:
 - `run_in_background: true`
@@ -875,24 +890,21 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
 
 8. CEO merges worktree to main branch
 
-9. CEO dispatches Secretary agent (background, opus):
+9. CEO writes a completion marker to the pair log:
    ```
-   Read and follow the agent prompt at ~/.claude/skills/team11/agents/secretary.md exactly.
-   
-   PAIR_ID: [pair that just completed]
-   PROJECT_ROOT: [absolute path]
-   EVENT: [coder_done|auditor_done|merge_done|round_complete]
-   PAIR_LOG_PATH: [path to pair log]
+   [PAIR:COMPLETE event=merge_done]
    ```
-   
+   The Secretary (already running in background since Step 4) sees this marker and
+   immediately processes all unhandled OUTBOX entries. No additional CEO action needed.
+
    The Secretary handles ALL post-merge housekeeping:
    - Processes [OUTBOX:*] entries from pair log → writes to DB
    - Updates pheromones.json and verdicts.json
    - Renders hive.md from DB state
    - Marks entries as processed
-   
+
    The CEO does NOT need to manually update hive.md, pheromones.json, or verdicts.json.
-   The Secretary handles it. The CEO just dispatches it — one line, cannot forget.
+   Secretary is already watching — CEO just writes the marker.
 ```
 
 **The auditing agent MUST stop and surface findings.** Never auto-approve. Never skip the human gate.
