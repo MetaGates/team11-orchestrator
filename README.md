@@ -30,14 +30,6 @@ You (human)
 Each pair: 2 identical agents that alternate coding and auditing.
 All run in background. You keep working. They surface findings to you.
 
-Each pair is deployed alongside a paired Secretary:
-  ┌────────────┐
-  │  Secretary │  watches pair log for [PAIR:COMPLETE] markers
-  │  (opus)    │  → processes OUTBOX entries each time CEO signals
-  └────────────┘  → writes facts/pheromones/gotchas to memory.db
-                  → triggers Turso cloud sync
-                  → renders fresh hive.md
-                  → exits on [PAIR:COMPLETE event=shutdown]
 ```
 
 ## How It Works (Step by Step)
@@ -114,15 +106,7 @@ You can:
 - **Reject** → pair starts over with your feedback
 - **Modify** → you give specific guidance, pair adjusts
 
-### 6. Secretary — Always Watching
-
-When the CEO dispatches a pair, it simultaneously dispatches a Secretary agent for that pair. Secretary runs in background and **watches the pair log** for `[PAIR:COMPLETE event=X]` markers — polling every 30 seconds. Each time the CEO writes a marker (after coder done, auditor done, merge), Secretary wakes up, processes all new `[OUTBOX:*]` entries from the log, writes them to `memory.db` via `write-and-sync.js` (which triggers Turso cloud sync within 60s), updates `pheromones.json` and `verdicts.json`, and renders a fresh `hive.md`. Then it goes back to watching.
-
-Secretary exits when it sees `[PAIR:COMPLETE event=shutdown]`.
-
-CEO does NOT need to remember to call Secretary — it's already running alongside every pair. CEO just writes the marker.
-
-### 7. The Hive Mind
+### 6. The Hive Mind
 
 When multiple pairs work simultaneously, they need to know what each other is doing. The hive mind (`.team11/hive.md`) is a shared file that every agent reads before editing and writes to after editing:
 
@@ -205,8 +189,7 @@ Proposals must be:
   │   ├── SKILL.md                      # CEO orchestration manual
   │   ├── README.md                     # This document
   │   ├── agents/
-  │   │   ├── coder-auditor.md          # Universal agent prompt (all 10 use this)
-  │   │   └── secretary.md              # Secretary agent prompt
+  │   │   └── coder-auditor.md          # Universal agent prompt (all 10 use this)
   │   └── protocols/
   │       └── connected-hive.md         # GitHub API sync protocol for connected mode
   └── commands/
@@ -219,13 +202,14 @@ Proposals must be:
   │   ├── logs/pair-N.md                # Pair activity logs
   │   ├── findings/pair-N-round-M.md    # Audit reports for human review
   │   ├── proposals/                    # Skill/memory proposals awaiting approval
-  │   ├── memory.db                     # SQLite — facts, pheromones, gotchas, contradictions
-  │   ├── mcp-server/                   # Scripts: write-and-sync.js, dist/
+  │   ├── mcp-server/                   # team11-memory MCP server (28 tools, SQLite+vector)
+  │   │   ├── src/                      # TypeScript source
+  │   │   ├── dist/                     # Compiled JS
+  │   │   └── README.md                 # Server docs, tool reference, sync setup
   │   ├── checkpoints/                  # Crash recovery state per pair
   │   │   └── pair-N-checkpoint.json
   │   ├── stale/                        # Archived knowledge below 25% confidence
-  │   ├── pheromones.json               # Extended pheromone trail data
-  │   └── _outbox.json                  # Temp file (Secretary uses during processing)
+  │   └── pheromones.json               # Extended pheromone trail data
   └── docs/logs/
       └── YYYY-MM-DD-pair-CEO.md         # Session log (compiled at standdown)
 ```
@@ -239,9 +223,13 @@ Proposals must be:
 
 ## Persistent Memory
 
-Facts, pheromones, and gotchas discovered during work live in `memory.db` (SQLite), located at `<project>/.team11/memory.db`. The Secretary writes to this DB via `write-and-sync.js`, which also triggers a Turso cloud sync. In connected mode, coworkers see new facts within 60 seconds of the sync.
+Facts, pheromones, and gotchas discovered during work live in a SQLite database managed by the **team11-memory MCP server** (`.team11/mcp-server/`). After each merge, the CEO writes findings, decisions, pheromone trails, and gotchas directly via MCP tool calls (`store_finding`, `store_decision`, `store_pheromone`, `store_gotcha`). Before dispatching pairs, the CEO calls `recall_context` to retrieve relevant prior knowledge and include it in the dispatch prompt.
 
-The DB is the source of truth. `hive.md`, `pheromones.json`, and `verdicts.json` are rendered views — Secretary regenerates them from DB state after each pair completion. Never edit them by hand.
+The MCP server uses hybrid FTS5 keyword search + sqlite-vec vector search (all-MiniLM-L6-v2, 384d). Results are ranked by BM25 relevance, importance weight, recency, and access frequency — merged with Reciprocal Rank Fusion and capped at ~8K tokens. Saves ~50K tokens per session by delivering curated context instead of raw file reads.
+
+**OneDrive warning:** Do not store `memory.db` inside an OneDrive-synced folder — SQLite WAL journaling conflicts with cloud sync. Set `TEAM11_MEMORY_DB` in the MCP server env to a path outside OneDrive (e.g. `C:/team11-data/<project>/memory.db`). See `.team11/mcp-server/README.md` for details.
+
+In connected mode (with Turso sync enabled), coworkers see new facts within 60 seconds of each write.
 
 ---
 
@@ -268,13 +256,81 @@ Team11 auto-discovers available MCP servers per project. Currently configured:
 |--------|-------|-------------|
 | **Playwright** | global | Browser automation, E2E testing, screenshots |
 | **Sequential Thinking** | global | Structured reasoning for complex decisions |
-| **Knowledge Graph Memory** | global | Persistent knowledge graph across sessions |
 | **GitHub** | global | PR management, issues, repo operations |
 | **Context7** | global | Documentation lookup for frameworks/libraries |
+| **team11-memory** | per-project | Persistent SQLite memory — `recall_context`, `store_finding`, `store_pheromone`, `get_pheromones`, 28 tools total |
+| **graphify** | per-project | Knowledge graph MCP — query graph nodes, community structure, god nodes, shortest paths |
 | **PostgreSQL** | per-project | Database schema inspection, query execution |
 | **Redis** | per-project | Cache inspection, session data, pub/sub |
 
 Agents use MCP tools when they provide richer data than built-in tools. For example: Postgres MCP for schema introspection instead of raw SQL, GitHub MCP for PR reviews instead of `gh` CLI.
+
+---
+
+## graphify Integration
+
+graphify turns your codebase into a queryable knowledge graph. Team11 uses it in two ways:
+
+1. **CEO context enrichment** — before dispatching, CEO reads `graphify-out/GRAPH_REPORT.md` to identify god nodes (highest-connectivity abstractions) and community structure. This replaces broad file scanning for architecture questions.
+2. **MCP server** — the graphify server (`python -m graphify.serve graphify-out/graph.json`) exposes graph queries as MCP tools. Agents can ask "what depends on X?" without reading 40 files.
+
+### Setup
+
+```bash
+# 1. Install graphify (Python 3.12+, per-project venv)
+uv venv .venv --python 3.12
+uv pip install graphifyy
+
+# 2. Register with Claude Code
+PYTHONUTF8=1 .venv/Scripts/python.exe -m graphify install        # installs skill
+PYTHONUTF8=1 .venv/Scripts/python.exe -m graphify claude install  # CLAUDE.md hook + PreToolUse
+
+# 3. Build the initial graph (run from project root)
+/graphify                # scans . → graphify-out/graph.json + graph.html + GRAPH_REPORT.md
+
+# 4. Add to .mcp.json
+```
+
+```json
+{
+  "mcpServers": {
+    "team11-memory": {
+      "command": "node",
+      "args": [".team11/mcp-server/dist/index.js"],
+      "env": { "TEAM11_MEMORY_DB": "C:/team11-data/<project>/memory.db" }
+    },
+    "graphify": {
+      "command": ".venv/Scripts/python.exe",
+      "args": ["-m", "graphify.serve", "graphify-out/graph.json"],
+      "env": { "PYTHONUTF8": "1" }
+    }
+  }
+}
+```
+
+```bash
+# 5. Enable in Claude Code settings
+# Add "graphify" and "team11-memory" to enabledMcpjsonServers in .claude/settings.local.json
+# Restart Claude Code
+```
+
+### What graphify produces
+
+| Output | Path | What it's for |
+|--------|------|--------------|
+| Knowledge graph | `graphify-out/graph.json` | MCP server source, agent queries |
+| Interactive viz | `graphify-out/graph.html` | Human exploration |
+| Report | `graphify-out/GRAPH_REPORT.md` | God nodes, communities, surprising connections — read before architecture work |
+| Wiki | `graphify-out/wiki/` | Per-node pages (when generated) |
+
+### Keeping the graph current
+
+The `graphify claude install` step registers a **PreToolUse hook** that prompts Claude Code to rebuild the graph after code changes. For manual rebuilds:
+
+```bash
+/graphify --update    # incremental — re-extracts only changed files (fast)
+/graphify             # full rebuild (slower, needed after large refactors)
+```
 
 ---
 
@@ -312,7 +368,6 @@ To turn it off mid-task: `/team11 stop`
 | Command | What It Does |
 |---------|-------------|
 | `/team11 swarm-debug <bug>` | All 5 pairs independently investigate a hard bug — converge on root cause, human picks hypothesis to pursue |
-| `/team11 research <topic>` | All 5 pairs research a topic from different angles, cross-pollinating findings via hive mind |
 
 ### Monitoring & Live View
 | Command | What It Does |
@@ -487,32 +542,13 @@ All agents run on Claude Opus 4.6 (per project policy).
 ```
 CEO writes → hive.md (read-only for pairs — shared awareness)
 CEO writes → inboxes/pair-N.md (targeted messages to specific pairs)
+CEO writes → memory.db (via team11-memory MCP tools after each merge)
 Pairs write → logs/pair-N.md (their own activity log)
 Pairs write → findings/pair-N-round-M.md (audit reports)
 Pairs write → proposals/*.md (knowledge proposals for human review)
-
-Secretary reads → logs/pair-N.md (processes [OUTBOX:*] entries)
-Secretary writes → memory.db (via write-and-sync.js)
-Secretary writes → hive.md (rendered from DB state)
-Secretary writes → pheromones.json, verdicts.json
 ```
 
 No shared-write files between pairs. Zero concurrency issues.
-
-### OUTBOX Entries (Pairs → Secretary)
-
-Pairs communicate discovered knowledge to Secretary by writing structured log entries prefixed `[OUTBOX:*]`. Secretary reads these after each completion and persists them to `memory.db`.
-
-| Entry Type | Purpose |
-|------------|---------|
-| `[OUTBOX:FACT]` | New discovered fact about the codebase |
-| `[OUTBOX:PHEROMONE]` | Task difficulty/duration data for future estimates |
-| `[OUTBOX:GOTCHA]` | Non-obvious pitfall encountered |
-| `[OUTBOX:CONTRADICTION]` | Finding that conflicts with existing hive knowledge |
-| `[OUTBOX:REINFORCED]` | Re-confirmation of an existing fact (resets decay timer) |
-| `[OUTBOX:RELEASE_FILES]` | Signal to release file claims in the DB |
-
-Pairs do not write directly to `memory.db`. All DB writes flow through Secretary to ensure Turso sync is triggered.
 
 ---
 
@@ -603,7 +639,6 @@ This also enables version history for the prompts themselves — you can see how
 | `/team11 operators` | Who's connected? |
 | `/team11 teardown` | Remove worktrees (see Windows warning above) |
 | `/team11 swarm-debug <bug>` | All pairs investigate a hard bug |
-| `/team11 research <topic>` | All pairs research from different angles |
 | `/team11 costs` | Token cost breakdown |
 | `/team11 test-prompt` | Evaluate project-prompt.md effectiveness |
 | `/team11 help` | All commands |

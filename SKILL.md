@@ -456,7 +456,6 @@ Team11 is **manual-only**. It does nothing unless you invoke it. No auto-trigger
 | `/team11 project-prompt` | Display the current project prompt (`.team11/project-prompt.md`) |
 | `/team11 project-prompt init` | Auto-generate initial project prompt by scanning the codebase |
 | `/team11 swarm-debug <bug>` | Enter swarm debugging mode for a hard bug (dispatches all available pairs to investigate independently) |
-| `/team11 research <topic>` | Enter swarm research mode — dispatches all available pairs to research a topic from different angles, cross-pollinating via hive mind |
 | `/team11 costs` | Show token cost breakdown per pair, per task, and totals |
 | `/team11 help` | Show this command list |
 | `/team11 connect` | Connect this project to shared hive. Creates `team11-coord` orphan branch if needed. Registers operator. |
@@ -683,23 +682,8 @@ For each pair N:
   3. Update hive mind with Pair N's assignment + background task ID
   4. Deploy Pair N agent (background)
      → "Pair N deployed. Pair N+1 standing by..."
-  5. Immediately deploy Secretary for Pair N (background) — it waits for the pair to finish
-     → Secretary watches the pair log for [PAIR:COMPLETE] markers and processes each one
-  6. Next pair (sees Pair N in hive mind)
+  5. Next pair (sees Pair N in hive mind)
 ```
-
-**Secretary is dispatched alongside every pair, not after merge.** This guarantees Secretary always runs — the CEO doesn't need to remember to call it. Secretary stays dormant until the pair writes a completion marker, then processes the OUTBOX entries for that event.
-
-**Secretary dispatch template** (sent immediately after deploying each pair):
-```
-Read and follow the agent prompt at ~/.claude/skills/team11/agents/secretary.md exactly.
-
-PAIR_ID: [pair-N]
-PROJECT_ROOT: [absolute path to main repo]
-PAIR_LOG_PATH: [PROJECT_ROOT]/.team11/logs/pair-N.md
-WATCH_MODE: true
-```
-In WATCH_MODE, Secretary polls the pair log every 30 seconds for new `[PAIR:COMPLETE event=X]` markers and processes each one as it appears. It exits when it sees `[PAIR:COMPLETE event=shutdown]`.
 
 Each pair is launched using the `Agent` tool with:
 - `run_in_background: true`
@@ -730,12 +714,6 @@ ACCEPTANCE CRITERIA: [what "done" looks like — specific, testable conditions]
 CONTEXT: [relevant code snippets, decisions, patterns to follow]
 CLAUDE.MD CONSTRAINTS: [paste any relevant constraints from the project's CLAUDE.md]
 RESEARCH DOCS: [if the task touches a domain with an R-XX.YY.md decision, reference it]
-
-Before dispatching, the CEO MUST call `recall_context` with the task description to retrieve
-relevant prior knowledge. Include the results in the dispatch prompt's CONTEXT section.
-This is NOT optional — it's how the team avoids repeating past mistakes.
-Also call `get_pheromones` to check difficulty estimates for similar past tasks.
-Include ALL relevant recall results in the CONTEXT section of the dispatch.
 
 IMPORTANT — NEVER DELEGATE UNDERSTANDING:
 The CEO must have synthesized all research and context into THIS prompt before
@@ -889,22 +867,6 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
 7. Loop until pair agrees + human approves
 
 8. CEO merges worktree to main branch
-
-9. CEO writes a completion marker to the pair log:
-   ```
-   [PAIR:COMPLETE event=merge_done]
-   ```
-   The Secretary (already running in background since Step 4) sees this marker and
-   immediately processes all unhandled OUTBOX entries. No additional CEO action needed.
-
-   The Secretary handles ALL post-merge housekeeping:
-   - Processes [OUTBOX:*] entries from pair log → writes to DB
-   - Updates pheromones.json and verdicts.json
-   - Renders hive.md from DB state
-   - Marks entries as processed
-
-   The CEO does NOT need to manually update hive.md, pheromones.json, or verdicts.json.
-   Secretary is already watching — CEO just writes the marker.
 ```
 
 **The auditing agent MUST stop and surface findings.** Never auto-approve. Never skip the human gate.
@@ -1046,40 +1008,6 @@ rm -f <project-root>/.team11/checkpoints/pair-N-checkpoint.json
    ```
 
 3. **Increment hive.md Version number.**
-
-### Memory DB Update
-
-After a successful merge, the CEO updates the persistent memory database via MCP tools:
-
-1. **Store findings:** For each audit finding from the pair's work, call `store_finding` with:
-   - title: finding title
-   - content: full finding content
-   - type: "finding" (or "gotcha" if it's a discovered pitfall)
-   - confidence: from the verdict (high/medium/low)
-   - source_pair: which pair produced it
-   - source_file: the findings .md file path
-   - tags: relevant tags (file names, systems touched)
-
-2. **Store decisions:** For any architectural decisions made during the task, call `store_decision` with:
-   - title: decision title
-   - content: what was decided
-   - rationale: why
-
-3. **Store pheromone trail:** Call `store_pheromone` with:
-   - task: task description
-   - pair: which pair did it
-   - difficulty: from the pair's pheromone log entry
-   - files_touched: list of files modified
-   - gotchas: non-obvious issues encountered
-   - duration_minutes: estimated time
-   - rounds: number of code-audit rounds
-
-4. **Store gotchas:** For any non-obvious gotchas discovered, call `store_gotcha` with:
-   - title: gotcha title
-   - content: full explanation
-   - evidence: how it was discovered
-
-**Note:** The MCP tool calls are in ADDITION to the existing flat file writes. Flat files remain the source of truth. memory.db is an index for fast retrieval.
 
 **Multiple pairs finishing in sequence:**
 ```
@@ -1844,68 +1772,6 @@ After the human selects a hypothesis:
 - It is NOT free. 5 pairs investigating costs ~5x one pair. Only use for bugs that justify the cost.
 - It is NOT autonomous. The human always decides which root cause to pursue. Always.
 - It is NOT a replacement for good debugging practices. If a bug is obvious from the stack trace, one pair is enough.
-
-## Swarm Research Mode
-
-Swarm research is a variant of swarm debugging applied to **internet research and codebase exploration**. Multiple pairs investigate the same broad topic from different angles, sharing findings in real-time through the hive mind so they build on each other's discoveries.
-
-### Trigger
-
-The CEO enters swarm research mode when:
-1. The user explicitly requests it: `/team11 research <topic>` or a task that requires broad research
-2. The CEO assesses a topic as multi-faceted (multiple sub-domains, competing approaches, wide literature)
-
-### How It Differs from Swarm Debug
-
-| Aspect | Swarm Debug | Swarm Research |
-|--------|------------|----------------|
-| Goal | Find ONE root cause | Gather ALL relevant knowledge |
-| Human gate | Mandatory on divergence — human picks | Not needed — all findings are additive |
-| Time-box | 15 minutes per pair | Flexible (research takes longer) |
-| Output | Root cause hypotheses | Research reports |
-| Convergence | Pairs should converge on THE answer | Pairs should DIVERGE into different sub-topics |
-
-### Cross-Pollination Protocol
-
-The key difference from independent research: **pairs read each other's findings mid-research and adjust.**
-
-1. Each pair writes `[SWARM-FINDING]` entries to their pair log as they discover things
-2. **CEO promotes key findings to hive.md Discovered Facts between dispatches** (or mid-flight if monitoring)
-3. Other research pairs read Discovered Facts at checkpoints and **build on what others found**:
-   - If Pair 1 found a key paper, Pair 2 reads it and follows its citations instead of searching independently
-   - If Pair 3 found that approach X is debunked, all pairs stop investigating X
-   - If Pair 2 found a framework, Pair 1 investigates its alternatives for comparison
-4. Pairs explicitly note cross-pollination: `[SWARM-FINDING] Building on F003 from Pair 1: [deeper insight]`
-
-### Dispatch
-
-Each pair gets a distinct research lane (angle), just like swarm debug. The CEO assigns lanes based on the topic:
-
-**Example for "AI agent memory systems":**
-| Pair | Research Lane |
-|------|-------------|
-| 1 | Academic papers and theoretical foundations |
-| 2 | Production frameworks and implementations |
-| 3 | Biological analogies and novel approaches |
-| 4 | Benchmarks, comparisons, and failure modes |
-| 5 | Implications and actionable adaptations for our project |
-
-### Output
-
-Each pair produces a research report in `.team11/findings/pair-N-<topic>-research.md`. The CEO then:
-1. Reads all reports
-2. Compiles a unified synthesis (or dispatches one more pair to do it)
-3. Presents the synthesis to the human
-
-Unlike swarm debug, there is no mandatory human gate on individual findings — research findings are additive, not competing. The human reviews the final synthesis.
-
-### When to Use
-
-- **Use swarm research** when: topic is broad, multiple sub-domains exist, you want comprehensive coverage fast
-- **Use single-pair research** when: topic is narrow, one pair can cover it in one pass
-- **Don't use swarm research** for: simple lookups, questions with a single definitive answer, topics where one authoritative source exists
-
----
 
 ## Prompt Testing (`/team11 test-prompt`)
 
