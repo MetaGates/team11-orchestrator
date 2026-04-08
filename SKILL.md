@@ -51,7 +51,7 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
       └── memory-XXXX.md             # Proposed memory (awaiting human approval)
 
 <project-root>/docs/logs/            # Permanent documentation (checked into git)
-  └── YYYY-MM-DD-pair-CEO.md         # Session log (CEO compiles at standdown)
+  └── YYYY-MM-DD-session-CEO-HHMM.md # Session log (CEO compiles at standdown, HHMM = start time)
 ```
 
 Agent working state (`.team11/`) is ephemeral and gitignored. Session logs (`docs/logs/`) are permanent and committed. The CEO compiles them from pair logs at `/team11 standdown`.
@@ -374,7 +374,7 @@ Every `.md` file created by Team11 (logs, findings, proposals, pair logs, hive m
 
 | Document | Name Format | Example |
 |----------|-------------|---------|
-| Daily work log | `docs/logs/YYYY-MM-DD-pair-N.md` | `docs/logs/2026-03-31-pair-1.md` |
+| Session work log | `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` | `docs/logs/2026-03-31-session-CEO-1430.md` |
 | Audit findings | `.team11/findings/pair-N-round-M.md` | `.team11/findings/pair-2-round-1.md` |
 | Pair activity log | `.team11/logs/pair-N.md` | `.team11/logs/pair-3.md` |
 | Skill proposal | `.team11/proposals/skill-SHORT-NAME.md` | `.team11/proposals/skill-upsert-batch-limit.md` |
@@ -452,7 +452,7 @@ Team11 is **manual-only**. It does nothing unless you invoke it. No auto-trigger
 | `/team11 proposals` | List all pending skill/memory proposals awaiting human review |
 | `/team11 approve <file>` | Approve a specific proposal (skill or memory) |
 | `/team11 reject <file>` | Reject and delete a specific proposal |
-| `/team11 log-today` | Display today's daily work log (`docs/logs/YYYY-MM-DD.md`) |
+| `/team11 log-today` | Display all session logs from today (`docs/logs/YYYY-MM-DD-session-*.md`) |
 | `/team11 project-prompt` | Display the current project prompt (`.team11/project-prompt.md`) |
 | `/team11 project-prompt init` | Auto-generate initial project prompt by scanning the codebase |
 | `/team11 swarm-debug <bug>` | Enter swarm debugging mode for a hard bug (dispatches all available pairs to investigate independently) |
@@ -521,7 +521,7 @@ When the user ends the session:
      C) Cancel standdown — keep session active
    ```
 2. **Compile the session log.** This is when ALL logging happens — not during active work.
-   The CEO reads all pair logs (`.team11/logs/pair-*.md`) from this session and compiles them into a single session log at `docs/logs/YYYY-MM-DD-pair-CEO.md`:
+   The CEO reads all pair logs (`.team11/logs/pair-*.md`) from this session and compiles them into a single session log at `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` (HHMM = session start time). NEVER overwrite an existing log — always create a new file:
    - What each pair worked on (files, changes, reasoning)
    - Audit findings and resolutions
    - Architecture decisions made
@@ -1340,7 +1340,9 @@ git push, PR create/merge, file deletion outside worktree, destructive git ops (
 
 ## Session Log (Written at Standdown)
 
-**Session log file:** `docs/logs/YYYY-MM-DD-pair-CEO.md`. Written ONCE at `/team11 standdown` — not during active work.
+**Session log file:** `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` where HHMM is the session start time (24h format). Written ONCE at `/team11 standdown` — not during active work.
+
+**CRITICAL: NEVER overwrite an existing session log.** Each session produces a NEW file. If multiple sessions happen on the same day, they get different HHMM suffixes (e.g., `2026-04-08-session-CEO-1430.md`, `2026-04-08-session-CEO-1855.md`). Before writing, check if the target filename already exists — if so, append a letter suffix (`-a`, `-b`, etc.) to guarantee uniqueness.
 
 **Agents do NOT write daily logs during work.** They write to their pair logs (`.team11/logs/pair-N.md`) in real time — that's the raw data. At standdown, the CEO compiles all pair logs into one clean session log.
 
@@ -1348,13 +1350,13 @@ git push, PR create/merge, file deletion outside worktree, destructive git ops (
 - Zero token waste on log formatting during active work
 - Pair logs already capture everything in real time
 - The CEO has the full picture at standdown — produces a better-organized summary
-- One file per session instead of N files per pair per day
+- One file per session, never overwritten — full history preserved
 
 Create `docs/logs/` if it doesn't exist.
 
 **At standdown, the CEO creates the session log with this format:**
 ```markdown
-# Work Log — [Month Day, Year]
+# Work Log — [Month Day, Year] (Session HHMM)
 
 ## Completed Today
 <!-- Append to this section throughout the day as tasks complete -->
