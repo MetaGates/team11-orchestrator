@@ -51,7 +51,7 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
       └── memory-XXXX.md             # Proposed memory (awaiting human approval)
 
 <project-root>/docs/logs/            # Permanent documentation (checked into git)
-  └── YYYY-MM-DD-session-CEO-HHMM.md # Session log (CEO compiles at standdown, HHMM = start time)
+  └── YYYY-MM-DD-session-CEO-HHMMSS.md # Session log (CEO compiles at standdown, HHMM = start time)
 ```
 
 Agent working state (`.team11/`) is ephemeral and gitignored. Session logs (`docs/logs/`) are permanent and committed. The CEO compiles them from pair logs at `/team11 standdown`.
@@ -374,7 +374,7 @@ Every `.md` file created by Team11 (logs, findings, proposals, pair logs, hive m
 
 | Document | Name Format | Example |
 |----------|-------------|---------|
-| Session work log | `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` | `docs/logs/2026-03-31-session-CEO-1430.md` |
+| Session work log | `docs/logs/YYYY-MM-DD-session-CEO-HHMMSS.md` | `docs/logs/2026-03-31-session-CEO-143022.md` |
 | Audit findings | `.team11/findings/pair-N-round-M.md` | `.team11/findings/pair-2-round-1.md` |
 | Pair activity log | `.team11/logs/pair-N.md` | `.team11/logs/pair-3.md` |
 | Skill proposal | `.team11/proposals/skill-SHORT-NAME.md` | `.team11/proposals/skill-upsert-batch-limit.md` |
@@ -521,7 +521,7 @@ When the user ends the session:
      C) Cancel standdown — keep session active
    ```
 2. **Compile the session log.** This is when ALL logging happens — not during active work.
-   The CEO reads all pair logs (`.team11/logs/pair-*.md`) from this session and compiles them into a single session log at `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` (HHMM = session start time). NEVER overwrite an existing log — always create a new file:
+   The CEO reads all pair logs (`.team11/logs/pair-*.md`) from this session and compiles them into a single session log at `docs/logs/YYYY-MM-DD-session-CEO-HHMMSS.md` (HHMMSS = session start time with seconds). NEVER overwrite an existing log — always create a new file:
    - What each pair worked on (files, changes, reasoning)
    - Audit findings and resolutions
    - Architecture decisions made
@@ -1340,9 +1340,9 @@ git push, PR create/merge, file deletion outside worktree, destructive git ops (
 
 ## Session Log (Written at Standdown)
 
-**Session log file:** `docs/logs/YYYY-MM-DD-session-CEO-HHMM.md` where HHMM is the session start time (24h format). Written ONCE at `/team11 standdown` — not during active work.
+**Session log file:** `docs/logs/YYYY-MM-DD-session-CEO-HHMMSS.md` where HHMM is the session start time (24h format). Written ONCE at `/team11 standdown` — not during active work.
 
-**CRITICAL: NEVER overwrite an existing session log.** Each session produces a NEW file. If multiple sessions happen on the same day, they get different HHMM suffixes (e.g., `2026-04-08-session-CEO-1430.md`, `2026-04-08-session-CEO-1855.md`). Before writing, check if the target filename already exists — if so, append a letter suffix (`-a`, `-b`, etc.) to guarantee uniqueness.
+**CRITICAL: NEVER overwrite an existing session log.** Each session produces a NEW file with seconds-precision timestamp (HHMMSS), guaranteeing uniqueness (e.g., `2026-04-08-session-CEO-143022.md`, `2026-04-08-session-CEO-185547.md`). The seconds component ensures no collisions even for multiple sessions in the same minute. Always use the current time at standdown, not the session start time.
 
 **Agents do NOT write daily logs during work.** They write to their pair logs (`.team11/logs/pair-N.md`) in real time — that's the raw data. At standdown, the CEO compiles all pair logs into one clean session log.
 
