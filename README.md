@@ -32,6 +32,23 @@ All run in background. You keep working. They surface findings to you.
 
 ```
 
+## What's New — 2026-04-22 Modernization
+
+Team11 was substantively upgraded on 2026-04-22. Key additions:
+
+- **`subagent_type` dispatch.** The CEO now passes `subagent_type: "team11-coder-auditor"` to the Agent tool instead of pasting the agent prompt inline. Registered stubs in `.claude/agents/` delegate to the canonical skill files. Same for `team11-researcher` and `team11-secretary`.
+- **Prefix-caching dispatch template.** Static content (project prompt, knowledge, CLAUDE.md) is ordered FIRST, dynamic content (hive, task, pair identity) LAST. Claude Code's automatic prefix cache reuses the static prefix across dispatches in a session — big token savings.
+- **Project prompt + knowledge topics.** Every project that uses Team11 should have `.team11/project-prompt.md` (index, always loaded) + `.team11/knowledge/<topic>.md` (loaded by CEO when relevant). Contains project-specific gotchas, patterns, conventions. Stops agents from rediscovering the same traps.
+- **`AskUserQuestion` human gates.** Every human decision point (findings, merge, destructive action, swarm-debug entry, standdown, etc.) uses structured multi-choice via `AskUserQuestion`. Voice-input friendly.
+- **Role-tiered model routing.** Config-driven via `.team11/config.json → model_routing`. CEO/Coder/Auditor default to `claude-opus-4-7`; Secretary/Researcher default to `claude-opus-4-6` (mechanical / lookup work). The config controls what the CEO passes to the Agent tool — never hardcode models in SKILL.md.
+- **HOTL (Human-on-the-Loop) gate.** `.team11/config.json → hotl_gate` with shadow mode by default. Auto-merge criteria: 0 critical/major-security/major findings, diff-size caps, pre-verification pass, no risk-list files touched. Shadow mode logs hypothetical decisions to `.team11/findings/hotl-shadow.jsonl` for agreement analysis before promotion to `live`.
+- **Procedural pheromones.** CEO calls `mcp__team11-memory__get_pheromones` before deciding pair count (mandatory, not aspirational). Returned gotchas inline into each pair's dispatch CONTEXT.
+- **Usage-weighted decay.** Memory DB decay has a 14-day grace period; access via `recall_context` / `search_memory` bumps `last_reinforced` automatically. Explicit `reinforce_finding` bumps confidence +20% (cap 1.0). See `.team11/mcp-server/src/decay.ts`.
+- **`/team11 health` command.** Prints memory DB stats + sync status + contradictions + stale entries. Surfaces rot before it bites.
+- **Task-board dispatch removed.** Self-claim-from-board mode was never exercised; CEO-assigned dispatch is the only path.
+
+Full session log: the project that runs this modernization writes it to `docs/logs/YYYY-MM-DD-session-CEO-HHMMSS.md`. Supersession memory: `feedback_team11_modernized_2026-04-22.md`.
+
 ## How It Works (Step by Step)
 
 ### 1. You Give a Task
@@ -392,6 +409,7 @@ To turn it off mid-task: `/team11 stop`
 | `/team11 log-today` | Display today's session log |
 | `/team11 project-prompt` | Display the project knowledge index |
 | `/team11 project-prompt init` | Deep codebase scan → generate initial project knowledge |
+| `/team11 health` | Memory DB health: entry counts by type, confidence distribution, stale entries, open contradictions, sync status, WAL size |
 
 ### Session Control
 | Command | What It Does |
@@ -521,7 +539,7 @@ Foreground agents block your session — you can't do anything while they work. 
 
 ## Token Cost Estimates
 
-All agents run on Claude Opus 4.6 (per project policy).
+All agents run on Claude Opus 4.7 (per project policy).
 
 | Scenario | Active Agents | Est. Hourly Cost |
 |----------|--------------|-----------------|

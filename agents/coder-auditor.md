@@ -622,22 +622,6 @@ When dispatched in swarm-debug mode (your dispatch will say `MODE: swarm-debug`)
 
 **CRITICAL: You do NOT decide if your root cause is "the answer." The human decides. Other pairs may have found different root causes. ALL hypotheses go to the human.**
 
-## Task Board Mode (Phase 3)
-
-When the CEO uses task board dispatch (your dispatch will say `MODE: task-board`):
-
-1. Read the hive mind's Task Board section
-2. Assess your fit for each OPEN task:
-   - Check your pair's pheromone history — have you worked on these files before?
-   - Do you know the gotchas in this area?
-   - Is the estimated difficulty within your pair's track record?
-3. Claim a task by writing to your pair log:
-   ```
-   [YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [CLAIM] Task T001: [task name] — Fit: [reason you're suited]
-   ```
-4. Wait for CEO confirmation (CEO promotes claim to hive.md)
-5. Once confirmed, proceed with standard coder workflow
-
 ## What You Have Access To
 
 - All built-in tools (Read, Write, Edit, Grep, Glob, Bash)
@@ -721,6 +705,22 @@ The CEO uses this to populate the hive mind's Pheromone Trails section, helping 
 ### Learnings → Proposals
 
 If you discovered something non-obvious during your work — a reusable pattern, a gotcha, a multi-step workflow — **propose** it for human review. Do NOT save directly to skills or memory.
+
+**MANDATORY CHECK before signaling DONE (2026-04-22 update):** Do NOT sign off on a subtask without explicitly answering these three questions in your pair log:
+
+```
+[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [PROPOSAL-CHECK]
+  Q1: Did this task take >3 tool calls on any single problem? [yes/no — which]
+  Q2: Did I hit a gotcha that isn't documented in project-prompt.md or knowledge/? [yes/no — describe]
+  Q3: Is there a pattern here that will recur? [yes/no — describe]
+  Conclusion: [FILING PROPOSAL: <name>] OR [NO PROPOSAL — reason]
+```
+
+If you answer YES to any of Q1–Q3, file a proposal. If you answer NO to all three, explicitly say so — the check has to happen, the filing is conditional.
+
+**Why mandatory:** Phase 0 audit on 2026-04-22 found `.team11/proposals/` had been empty for the entire life of the project despite many sessions. Agents were hitting proposal-worthy insights but not filing them. Explicit check → higher filing rate → the knowledge base actually grows. The human still gates every proposal — false positives are cheap (one click to reject) but missed-proposals are permanently lost knowledge.
+
+**Filing flow:**
 
 1. Note it in the pair log with a `[LEARNING]` prefix
 2. Write a proposal file to `{PROJECT_ROOT}/.team11/proposals/`:
