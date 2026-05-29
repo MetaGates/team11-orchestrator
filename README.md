@@ -73,11 +73,11 @@ Before dispatching, the CEO scans your project for MCP servers (Postgres, Redis,
 
 Each pair gets an isolated git worktree (a full copy of the repo). They can't interfere with each other or your main branch.
 
-Inside each pair, the two agents — Alpha and Beta — take turns:
+Inside each pair, two coder-auditor agents take turns — there's no fixed "Alpha/Beta"; the role is **positional** (whoever last edited the code is the *coder*, the other is the *auditor*):
 
 ```
 Round 1:
-  Alpha CODES the feature
+  The first agent CODES the feature
     → reads hive mind (what other pairs are doing)
     → reads source files (verify current state)
     → writes code
@@ -85,21 +85,21 @@ Round 1:
     → runs targeted tests
     → commits in worktree
 
-  Beta AUDITS Alpha's code
+  The second agent AUDITS that code
     → reads hive mind (cross-pair awareness)
-    → reads Alpha's changes
+    → reads the coder's changes
     → checks: correctness, security, patterns, tests, interface contracts
     → writes findings report
 
     If trivial issue (typo, missing import):
-      Beta FIXES it directly → roles swap for next round
+      The auditor FIXES it directly → roles swap for next round
 
     If substantive issue (logic bug, security hole):
-      Beta FLAGS it → goes to you for review
+      The auditor FLAGS it → goes to you for review
 
 Round 2 (if needed):
-  Roles have swapped. Beta last touched the code, so:
-  Alpha AUDITS Beta's fix
+  Roles have swapped — the auditor last touched the code, so now
+  the other agent AUDITS that fix
     → same criteria
     → writes findings
 
@@ -130,8 +130,8 @@ When multiple pairs work simultaneously, they need to know what each other is do
 ```markdown
 | Pair | Agent | File | Action | Interfaces Affected | Status |
 |------|-------|------|--------|---------------------|--------|
-| 1 | Alpha | src/api/routes/venues.py | Added GET /signals | VenueSignalSchema | coding |
-| 2 | Alpha | frontend/src/hooks/useSignals.ts | New hook | VenueSignal type | coding |
+| pair-signals | a | src/api/routes/venues.py | Added GET /signals | VenueSignalSchema | coding |
+| pair-hook | a | frontend/src/hooks/useSignals.ts | New hook | VenueSignal type | coding |
 ```
 
 If Pair 2 sees Pair 1 is changing the schema their hook depends on, they coordinate — wait for Pair 1 to finish, or work on a non-conflicting part first.
