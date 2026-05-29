@@ -8,6 +8,104 @@ This protocol defines how the CEO reads and writes the shared hive mind when Tea
 - `.team11/config.json` has `mode: "connected"` with valid operator info
 - `team11-coord` branch exists on the remote repo
 
+## Modes: Solo vs Connected
+
+Connected mode lets multiple humans run Team11 on the same GitHub repo from different machines; their agents share one hive (the `team11-coord` orphan branch) so file claims are visible across operators. It is **opt-in, per-project**. Disconnected, Team11 is fully local with zero network calls.
+
+| Aspect | Solo (default) | Connected |
+|--------|---------------|-----------|
+| Hive mind | `.team11/hive.md` (local, gitignored) | `team11-coord` branch on GitHub (shared) |
+| Pair naming | `pair-1` | `{prefix}-pair-1` (e.g., `cs-pair-1`) |
+| File claims | Visible to local CEO only | Visible to ALL operators' CEOs |
+| Project prompt | Local `.team11/project-prompt.md` | Shared on `team11-coord` branch |
+| Knowledge base | Local `.team11/knowledge/` | Shared on `team11-coord` branch |
+| Pair logs | Local `.team11/logs/pair-N.md` | Synced to `team11-coord: logs/{prefix}-pair-N.md` |
+| Inboxes / Findings / Worktrees / Config | Local | LOCAL only (never shared) |
+
+## Configuration (`.team11/config.json`)
+
+Default (solo): `{"mode": "solo", "operator": null, "repo": null}`
+
+When connected:
+```json
+{
+  "mode": "connected",
+  "operator": { "name": "CyberStein", "github": "CyberStein", "prefix": "cs", "pairs": [1,2,3,4,5] },
+  "repo": "eoc-gengine/loopborn"
+}
+```
+
+**Mode check:** Before every hive read/write, check `config.json`. If `mode: "solo"`, use local `.team11/hive.md`. If `mode: "connected"`, use the sync protocol below.
+
+## `/team11 connect` Protocol
+
+One-time per project. **Prerequisite:** verify `gh` is authenticated (`gh auth status`); if not, stop and tell the user to install/login (`winget install GitHub.cli` / `brew install gh` / `scoop install gh`).
+
+1. Determine repo from `git remote get-url origin`
+2. If `team11-coord` already exists on remote → tell user to use `connect join`
+3. Create orphan branch `team11-coord` via GitHub API with an initial `hive.md`
+4. Register this operator by creating `operators/{name}.json` on `team11-coord`
+5. Save local `.team11/config.json`
+
+Ask the user (via `AskUserQuestion`) for: display name (default git user.name), short prefix (2-3 chars), number of pairs (default 5).
+
+## `/team11 connect join` Protocol
+
+1. Verify `team11-coord` exists on remote — if not, tell user to ask a coworker to run `/team11 connect` first
+2. Read existing operators to avoid prefix collision
+3. Register this operator (same as connect step 4)
+4. Download shared `project-prompt.md` + `knowledge/` if present
+5. Save local `.team11/config.json`
+
+## `/team11 disconnect` Protocol
+
+Instant switch back to solo: (1) set local `config.json` `mode: "solo"`; (2) copy current shared hive to local hive (don't lose mid-task context); (3) remove this operator's active edits from the shared hive (courtesy cleanup); (4) the `team11-coord` branch stays on GitHub for coworkers.
+
+## `/team11 operators` Output
+
+```
+TEAM11 OPERATORS — eoc-gengine/loopborn
+| Operator | Prefix | Pairs | Last Active | Status |
+|----------|--------|-------|-------------|--------|
+| CyberStein | cs | 1-5 | 2026-04-01 14:32 | active (2 pairs running) |
+| oldworldlab | owl | 1-5 | 2026-04-01 14:30 | active (1 pair running) |
+```
+
+## Hive Mind in Connected Mode
+
+The hive table gains an **Operator** column:
+```markdown
+## Active Edits
+| Operator | Pair | File | Action | Status | Timestamp |
+|----------|------|------|--------|--------|-----------|
+| cs | cs-pair-1 | client-game/src/ui/HUD.js | Refactoring layout | coding | 14:32 |
+| owl | owl-pair-1 | nakama/src/combat.ts | Fix boss AI | auditing | 14:30 |
+```
+
+**File claim checking (core anti-regression mechanism):** before dispatching any pair, the CEO reads the shared hive — if ANY operator's pair (including other humans') already claims a file, BLOCK (wait, re-scope, or ask the human). No two agents across ANY operator touch the same file simultaneously.
+
+## Connected Mode Changes to Operating Protocol
+
+These are the ONLY changes to the dispatch protocol; everything else is identical.
+
+- **Step 3 (Initialize State):** if `mode: "connected"` — read hive from `team11-coord` instead of local; use operator-prefixed pair names (`{prefix}-pair-{N}`) in all hive entries.
+- **Step 4 (Dispatch):** sync hive from GitHub before reading; include operator prefix in pair identity; after writing the new pair's claim to the hive, push to GitHub.
+- **Step 6 (Merge):** after merging to main and pushing, update the shared hive to remove the pair's file claims so other operators' CEOs see them freed on next sync.
+
+## Shared Knowledge Sync
+
+Project knowledge (`project-prompt.md` + `knowledge/`) is shared via `team11-coord`:
+- **On connect/join:** download existing shared knowledge if present; upload local if shared is empty.
+- **On proposal approval:** upload the updated knowledge file (and index if changed) to `team11-coord`.
+- **On `/team11 sync`:** refresh local knowledge from shared.
+
+## Security Notes
+
+- `team11-coord` contains NO source code — only coordination state.
+- Pair logs carry file paths + change descriptions, never file contents.
+- `gh` uses the user's existing GitHub auth — no new credentials; operator identity = GitHub username (no shared secrets).
+- The branch can be protected via GitHub branch-protection rules.
+
 ## Reading the Shared Hive
 
 ```bash

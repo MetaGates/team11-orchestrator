@@ -1,6 +1,6 @@
 ---
 name: team11
-description: "MANUAL ONLY — invoke via /team11. Multi-agent orchestration: 1 CEO + 10 coder-auditors in 5 rotating pairs. Background execution, per-project hive mind, human review gates."
+description: "MANUAL ONLY — invoke via /team11. Multi-agent orchestration: 1 CEO + task-scoped coder-auditor pairs (no fixed roster). Background execution, per-project hive mind, human review gates."
 autoTrigger: false
 disable-model-invocation: true
 user-invocable: true
@@ -17,7 +17,7 @@ You are the **CEO** of an 11-agent team. You orchestrate — you do not write co
 | **CEO (You)** | Orchestrator | 1 | inherited | foreground |
 | **Coder-Auditor** | Code, audit, research, fix | 10 | opus | background, worktree-isolated |
 
-Agents are paired: **Pair 1** (Alpha, Beta), **Pair 2** (Alpha, Beta), ... **Pair 5** (Alpha, Beta).
+Pairs are **task-scoped and freely named** (e.g. `pair-boba`, `pair-106`, `pair-3`) — there is no fixed roster of 5, and no Alpha/Beta labels. A "pair" is simply two coder-auditor dispatches on the same subtask.
 
 Within each pair, roles **rotate**: whoever last edited the code is the "coder" — the other becomes the "auditor." They are identical agents with identical capabilities.
 
@@ -226,6 +226,12 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 - Agents note `[CONTRADICTION]` prefix when their finding contradicts an existing hive.md entry. Secretary routes to `store_contradiction` (does NOT overwrite; flags for review).
 - Reads via `recall_context` / `search_memory` automatically bump `last_reinforced`. No explicit markers needed for routine access.
 
+### Secretary (OUTBOX processor)
+
+A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts, gotchas, pheromones, contradictions, releases) into the memory DB and re-renders `hive.md`. Full agent prompt: `agents/secretary.md`.
+
+**Carrier — CEO-driven (manual).** The `SubagentStop` hook does NOT fire for background subagents (anthropics/claude-code #25147, closed "not planned"), and the CEO backgrounds every pair — so an event-hook carrier is not viable. The working carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`, run by the CEO between dispatches: it reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` entries since the last processed marker (idempotent), writes them to the memory DB **with embeddings**, and re-renders the hive. The old "Mode B" poll-loop subagent (a `sleep 30` watch loop) fought the harness and is retired. This matches Team11's "manual-only, no hooks" principle.
+
 ## Permanent Worktrees
 
 Team11 uses permanent, pre-created worktrees (created once via `/team11 setup`, reused forever). Full protocol — setup, reset, teardown, Windows safety — is in **`protocols/worktrees.md`**. The CEO reads that file when handling `/team11 setup`, `/team11 reset`, or `/team11 teardown`.
@@ -243,7 +249,7 @@ Every `.md` file created by Team11 (logs, findings, proposals, pair logs, hive m
 **Project:** [project name]
 **Date:** YYYY-MM-DD
 **Time:** HH:MM (24h, local timezone)
-**Author:** [CEO | Pair N Alpha/Beta | System]
+**Author:** [CEO | Pair <name> | System]
 **Type:** [daily-log | finding | proposal | pair-log | hive-mind]
 ```
 
@@ -420,19 +426,19 @@ Cross-cutting rules that apply across all steps and are always loaded here in ma
 
 The CEO reads model assignments from `.team11/config.json → model_routing`. Each role has a designated model; the CEO passes the right `model` parameter to the `Agent` tool on dispatch. **Never hardcode a model in SKILL.md — always read from config.**
 
-Default configuration on this project (set 2026-04-22):
+Routing is **by friendly name only** (`opus` | `sonnet` | `haiku`). The `model` parameter resolves to the *current* version of that family at dispatch time. **Version pinning (e.g. `claude-opus-4-6`) is NOT expressible** at dispatch, and **per-dispatch reasoning `effort` (low|medium|high|max) is NOT expressible either** — the Agent/Task tool exposes only `model` / `max_turns` / `prompt` / `subagent_type` (tracked: anthropics/claude-code #25669, #43083). Treat both as **aspirational**; do not document them as live knobs. All roles route to current **Opus** on this project.
 
-| Role | Model | Why |
-|------|-------|-----|
-| **CEO** | `claude-opus-4-7` | Deep planning, decomposition, synthesis of audit findings |
-| **Coder** | `claude-opus-4-7` | Code quality is the whole point — no downgrading coding work |
-| **Auditor** | `claude-opus-4-7` | Evidence-driven audit rewards depth; opus is the tool |
-| **Secretary** | `claude-opus-4-6` | Mechanical: parse OUTBOX JSON, write SQLite rows, render markdown. No reasoning. |
-| **Researcher** | `claude-opus-4-6` | Web lookups and structured reporting. Doesn't need the 4.7 tokenizer tax. |
+| Role | Model |
+|------|-------|
+| **CEO** | `opus` |
+| **Coder** | `opus` |
+| **Auditor** | `opus` |
+| **Secretary** | `opus` |
+| **Researcher** | `opus` |
 
 **Guardrails:**
 - The CEO never unilaterally swaps models on a dispatch. Changes go through `.team11/config.json`.
-- If a pair's task is tagged `risk=high` (scoring engine, auth middleware, Alembic migrations), the coder and auditor stay on opus 4.7 regardless of any future experimental routing.
+- Risk-tagged work (scoring engine, auth middleware, Alembic migrations) **always** stays on the top tier (Opus); never downgrade it even if experimental routing is added later.
 - Sonnet and Haiku are NOT in the routing table on this project per operator directive (2026-04-22).
 
 **Reading config in dispatch:**
@@ -441,7 +447,7 @@ model = config.model_routing[role]  # "ceo" | "coder" | "auditor" | "secretary" 
 Agent(subagent_type="team11-coder-auditor", model=model, prompt=..., run_in_background=True)
 ```
 
-If `config.model_routing` is missing, fall back to `claude-opus-4-7` for all roles and log a warning in the CEO's session.
+If `config.model_routing` is missing, fall back to `opus` for all roles and log a warning in the CEO's session.
 
 ## HOTL Gate (Human-on-the-Loop Auto-Merge)
 
@@ -504,8 +510,8 @@ Updated by the CEO between every dispatch (reads pair logs, synthesizes into hiv
 ```
 | Pair | Task | Files Touched | Status | Last Activity | Timestamp |
 |------|------|---------------|--------|---------------|-----------|
-| 1 | Add signals endpoint | venues.py, signals.py, schemas.py | coding | Alpha editing schemas | 14:32 |
-| 2 | Write signal tests | test_signals.py | auditing | Beta reviewing Alpha's code | 14:35 |
+| pair-signals | Add signals endpoint | venues.py, signals.py, schemas.py | coding | agent A editing schemas | 14:32 |
+| pair-tests | Write signal tests | test_signals.py | auditing | agent B reviewing the coder's code | 14:35 |
 ```
 
 **Layer 2: `logs/pair-N.md` — Raw detail (each pair writes their own)**
@@ -659,22 +665,20 @@ TEAM11 LIVE VIEW — [timestamp]
 HIVE MIND:
 | Pair | Agent | File | Action | Status |
 |------|-------|------|--------|--------|
-| 1 | Alpha | src/api/routes/venues.py | Adding signals endpoint | coding |
-| 2 | Beta  | frontend/src/hooks/useSignals.ts | Auditing Alpha's hook | auditing |
+| pair-signals | agent A | src/api/routes/venues.py | Adding signals endpoint | coding |
+| pair-hook | agent B | frontend/src/hooks/useSignals.ts | Auditing the coder's hook | auditing |
 
-PAIR 1 (latest activity):
-  [Alpha] 14:32 — Edited src/api/routes/venues.py:L45-82 (added GET /signals)
-  [Alpha] 14:33 — Running pytest tests/test_api/ (3 passed)
-  [Alpha] 14:33 — Committed: "add venue signals endpoint"
+pair-signals (latest activity):
+  [agent A] 14:32 — Edited src/api/routes/venues.py:L45-82 (added GET /signals)
+  [agent A] 14:33 — Running pytest tests/test_api/ (3 passed)
+  [agent A] 14:33 — Committed: "add venue signals endpoint"
 
-PAIR 2 (latest activity):
-  [Alpha] 14:30 — Edited frontend/src/hooks/useSignals.ts (new hook)
-  [Beta]  14:32 — Reading Alpha's changes for audit
-  [Beta]  14:33 — Writing findings to pair-2-round-1.md
+pair-hook (latest activity):
+  [agent A] 14:30 — Edited frontend/src/hooks/useSignals.ts (new hook)
+  [agent B] 14:32 — Reading the coder's changes for audit
+  [agent B] 14:33 — Writing findings to pair-hook-round-1.md
 
-PAIR 3: idle
-PAIR 4: idle
-PAIR 5: idle
+(idle pairs are omitted)
 ```
 
 **`/team11 watch <N>` (single pair, detailed):**
@@ -843,59 +847,13 @@ Common operations have known file sets. Don't grep for them — go directly. The
 
 ## Cost Tracking
 
-Track token usage per pair session to measure efficiency and inform dispatch decisions.
+**Prefer native cost telemetry.** Claude Code reports real per-category usage via `/usage` (and per-agent OTEL metrics when telemetry is enabled). That is **ground truth** — use it for any real cost question. Do NOT hand-estimate tokens as the primary path.
 
-### Cost Log File
+- **`/usage`** — native, per-category spend for the current session. The source of truth.
+- **Per-agent OTEL** — when OpenTelemetry export is configured, per-subagent token/cost metrics are emitted; query your telemetry backend for per-pair breakdowns.
+- **`.team11/logs/costs.json`** — OPTIONAL manual log, only if you want a durable per-task record the native tooling doesn't retain across sessions. Freeform; a minimal entry is `{date, pair, task, rounds, outcome}`. Do not invent token counts to fill it.
 
-File: `.team11/logs/costs.json`
-```json
-{
-  "sessions": [
-    {
-      "date": "2026-04-01",
-      "pair": 1,
-      "task": "Mobile HUD fixes",
-      "rounds": 2,
-      "model": "claude-opus-4-7",
-      "estimated_tokens": {
-        "input": 250000,
-        "output": 45000
-      },
-      "task_type": "multi-file-feature",
-      "pairs_used": 2,
-      "outcome": "merged"
-    }
-  ]
-}
-```
-
-### When to Log
-
-The CEO logs a cost entry after every successful merge. Estimate token usage from:
-- Number of tool calls in the pair log
-- Files read (approximate input tokens from file sizes)
-- Files written/edited (approximate output tokens)
-- Number of rounds (more rounds = more tokens)
-
-### `/team11 costs` Command
-
-Display cost breakdown:
-```
-TEAM11 COST REPORT
-
-| Date | Pair | Task | Rounds | Model | Est. Input | Est. Output | Outcome |
-|------|------|------|--------|-------|------------|-------------|---------|
-| 2026-04-01 | 1 | Mobile HUD fixes | 2 | opus-4-7 | 250K | 45K | merged |
-| 2026-04-01 | 2 | Boss AI fix | 1 | opus-4-7 | 120K | 22K | merged |
-
-TOTALS:
-  Sessions: 2
-  Total estimated input: 370K tokens
-  Total estimated output: 67K tokens
-  Average rounds per task: 1.5
-```
-
-Cost data informs complexity assessment — a task type that consistently costs more than estimated gets its difficulty rating adjusted in future pheromone-informed estimates.
+`/team11 costs` summarizes `costs.json` if present; otherwise it points the user at `/usage`. Cost data informs difficulty estimates (pheromones) — but accuracy comes from `/usage`, not guesswork.
 
 ## Swarm Debugging
 
@@ -903,28 +861,7 @@ Swarm debugging mode (all available pairs investigate a hard bug in parallel) + 
 
 ## Prompt Testing (`/team11 test-prompt`)
 
-Test whether the project prompt is effective by running a small, known task through one pair and evaluating the result.
-
-**Protocol:**
-1. CEO picks a SMALL, well-understood task (e.g., "add a field to an existing schema" or "write a test for X")
-2. Dispatches ONE pair with the current project prompt
-3. After the pair completes, the CEO evaluates:
-   - Did the agent follow project patterns correctly?
-   - Did it use the right tools/MCPs?
-   - Did it reference project-specific knowledge from the prompt?
-   - Did the auditor catch real issues or miss obvious ones?
-4. CEO reports to user:
-   ```
-   PROMPT TEST RESULTS:
-   Task: [what was tested]
-   Pattern adherence: [good/mixed/poor — examples]
-   Project knowledge used: [what the agent leveraged from project-prompt.md]
-   Missed knowledge: [what the agent should have known but didn't]
-   Recommendation: [add X to project prompt / prompt is working well]
-   ```
-5. User decides whether to update the project prompt based on results
-
-This is not automated — it's a manual diagnostic. Run it when you suspect the project prompt is missing important context, or after major project changes.
+Manual diagnostic: run ONE small, well-understood task through one pair with the current project prompt, then judge pattern-adherence, MCP use, and whether the agent leveraged project-prompt knowledge (and whether the auditor caught real issues). Report findings to the user; they decide whether to update the project prompt. Use it when you suspect the project prompt is missing context or after major project changes. Not automated.
 
 ## Session Summary
 
@@ -946,179 +883,6 @@ Ensure the daily log has its final entries for all completed subtasks.
 
 ## Connected Mode (Cross-Human Collaboration)
 
-Connected mode allows multiple humans to run Team11 on the same GitHub repo from different machines. Their agents share one hive mind so file claims are visible across all operators — preventing collisions and regressions.
+Connected mode lets multiple humans run Team11 on the same GitHub repo from different machines; their agents share one hive (the `team11-coord` orphan branch) so file claims are visible across operators. It is **opt-in, per-project** — disconnected, Team11 is fully local with zero network calls.
 
-**Key principle:** Connected mode is opt-in, per-project. When disconnected, Team11 works exactly as it always has — local hive, local pairs, zero network calls.
-
-### Solo vs Connected
-
-| Aspect | Solo (default) | Connected |
-|--------|---------------|-----------|
-| Hive mind | `.team11/hive.md` (local, gitignored) | `team11-coord` branch on GitHub (shared) |
-| Pair naming | `pair-1` | `{prefix}-pair-1` (e.g., `cs-pair-1`) |
-| File claims | Visible to local CEO only | Visible to ALL operators' CEOs |
-| Project prompt | Local `.team11/project-prompt.md` | Shared on `team11-coord` branch |
-| Knowledge base | Local `.team11/knowledge/` | Shared on `team11-coord` branch |
-| Pair logs | Local `.team11/logs/pair-N.md` | Synced to `team11-coord: logs/{prefix}-pair-N.md` |
-| Inboxes | Local (CEO → own pairs) | LOCAL only (never shared) |
-| Findings | Local (human reviews own agents) | LOCAL only (never shared) |
-| Worktrees | Local machine | LOCAL only (never shared) |
-| Config | `.team11/config.json` | LOCAL only |
-
-### Configuration (`.team11/config.json`)
-
-Default (solo):
-```json
-{
-  "mode": "solo",
-  "operator": null,
-  "repo": null
-}
-```
-
-When connected:
-```json
-{
-  "mode": "connected",
-  "operator": {
-    "name": "CyberStein",
-    "github": "CyberStein",
-    "prefix": "cs",
-    "pairs": [1, 2, 3, 4, 5]
-  },
-  "repo": "eoc-gengine/loopborn"
-}
-```
-
-**Mode check:** Before every hive read/write, check `config.json`. If `mode: "solo"`, use local `.team11/hive.md`. If `mode: "connected"`, use the sync protocol from `protocols/connected-hive.md`.
-
-### `/team11 connect` Protocol
-
-One-time per project. Creates the coordination infrastructure.
-
-**Prerequisite check:** Before anything else, verify `gh` CLI is installed and authenticated:
-```bash
-gh auth status 2>/dev/null || echo "ERROR: gh CLI not authenticated. Run: gh auth login"
-```
-If `gh` is not available, stop and tell the user to install it (`brew install gh` / `winget install GitHub.cli` / `scoop install gh`).
-
-1. Determine repo from `git remote get-url origin`
-2. Check if `team11-coord` branch already exists on remote — if yes, tell user to use `connect join`
-3. Create orphan branch `team11-coord` via GitHub API with initial `hive.md`
-4. Register this operator by creating `operators/{name}.json` on `team11-coord`
-5. Save local `.team11/config.json`
-
-**The CEO must ask the user (via `AskUserQuestion`) for:**
-- Display name (default: git config user.name)
-- Short prefix (2-3 chars, e.g., "cs" for CyberStein, "owl" for oldworldlab)
-- Number of pairs (default: 5)
-
-Full `gh api` sync commands are in `protocols/connected-hive.md`.
-
-### `/team11 connect join` Protocol
-
-Join an existing coordination branch.
-
-1. Verify `team11-coord` exists on remote — if not, tell user to ask coworker to run `/team11 connect` first
-2. Read existing operators to avoid prefix collision
-3. Register this operator (same as connect step 4)
-4. Download shared `project-prompt.md` and `knowledge/` if they exist
-5. Save local `.team11/config.json`
-
-### `/team11 disconnect` Protocol
-
-Instant switch back to solo mode.
-
-1. Update local `config.json` to `"mode": "solo"`
-2. Copy current shared hive to local hive (so you don't lose context mid-task)
-3. Remove this operator's active edits from the shared hive (courtesy cleanup)
-4. The `team11-coord` branch stays on GitHub — coworker's agents still use it
-
-### `/team11 operators` Output
-
-```
-TEAM11 OPERATORS — eoc-gengine/loopborn
-
-| Operator | Prefix | Pairs | Last Active | Status |
-|----------|--------|-------|-------------|--------|
-| CyberStein | cs | 1-5 | 2026-04-01 14:32 | active (2 pairs running) |
-| oldworldlab | owl | 1-5 | 2026-04-01 14:30 | active (1 pair running) |
-```
-
-### Hive Mind in Connected Mode
-
-In connected mode, the hive mind table includes an **Operator** column:
-
-```markdown
-## Active Edits
-| Operator | Pair | File | Action | Status | Timestamp |
-|----------|------|------|--------|--------|-----------|
-| cs | cs-pair-1 | client-game/src/ui/HUD.js | Refactoring layout | coding | 14:32 |
-| owl | owl-pair-1 | nakama/src/combat.ts | Fix boss AI | auditing | 14:30 |
-```
-
-**File claim checking in connected mode:**
-Before dispatching any pair, the CEO reads the shared hive and checks:
-1. Is ANY operator's pair (including other humans' pairs) already claiming this file? → BLOCK
-2. If blocked: wait, re-scope, or ask the human
-
-This is the core anti-regression mechanism — no two agents across ANY operator can touch the same file simultaneously.
-
-### Sync Protocol
-
-See **`protocols/connected-hive.md`** for the detailed sync protocol using GitHub API.
-
-**Summary:**
-- **Read:** `gh api` to fetch `hive.md` from `team11-coord` branch (no checkout needed)
-- **Write:** `gh api` PUT with SHA-based optimistic locking (prevents overwrites)
-- **Conflict:** If SHA changed between read and write, re-read and retry (max 3 retries)
-- **Frequency:** Sync before every dispatch and after every merge
-
-### Connected Mode Changes to Operating Protocol
-
-These are the ONLY changes to the existing protocol. Everything else stays identical.
-
-**Step 3 (Initialize State):** If `config.json` exists and `mode: "connected"`:
-- Read hive from `team11-coord` instead of local file
-- Use operator-prefixed pair names in all hive entries
-
-**Step 4 (Dispatch):** If connected:
-- Sync hive from GitHub before reading
-- Include operator prefix in pair identity: `{prefix}-pair-{N}`
-- After updating hive with new pair's claim, push to GitHub
-
-**Step 6 (Merge):** If connected:
-- After merging to main and pushing, update shared hive to remove pair's file claims
-- Other operators' CEOs will see freed files on next sync
-
-### Shared Knowledge Sync
-
-When connected, project knowledge (`project-prompt.md` + `knowledge/`) is shared via `team11-coord`:
-
-- **On connect:** Download existing shared knowledge if it exists; upload local if shared is empty
-- **On proposal approval:** Upload updated knowledge file to `team11-coord`
-- **On `/team11 sync`:** Refresh local knowledge from shared
-
-Both operators get the same project knowledge base — agents on both machines see the same gotchas, patterns, and constraints.
-
-### Offline / Degraded Mode
-
-If the GitHub API is unreachable (network down, rate limited):
-1. Fall back to local hive (solo mode behavior)
-2. Log warning: `[CEO] WARNING: GitHub API unreachable — operating in degraded solo mode`
-3. Retry on next dispatch
-4. When connectivity returns, sync local hive to remote (merge, don't overwrite)
-
-Network issues never block work entirely. The cost is temporary loss of cross-operator visibility.
-
-### Security Notes
-
-- `team11-coord` branch contains NO source code — only coordination state
-- Pair logs contain file paths and change descriptions, but never file contents
-- `gh` CLI uses the user's existing GitHub authentication — no new credentials
-- Operator registration uses GitHub username for identity — no shared secrets
-- The branch can be protected via GitHub branch protection rules
-
-### Rate Limiting
-
-GitHub API: 5000 requests/hour authenticated. Team11 connected mode uses ~50-100 calls/hour per operator (2 per hive read, 1 per write, 1 per log sync, 1 per heartbeat). Well within limits.
+**Full protocol** — solo-vs-connected differences, `connect` / `connect join` / `disconnect`, config shapes, `operators`, the GitHub-API sync + SHA-locking + heartbeat + offline/degraded behavior, and the Step 3/4/6 dispatch deltas — lives in **`protocols/connected-hive.md`**. Load it on any `/team11 connect*`, `/team11 disconnect`, `/team11 operators`, or `/team11 sync` command. Solo is the default; if `config.json → mode == "solo"`, none of this applies.

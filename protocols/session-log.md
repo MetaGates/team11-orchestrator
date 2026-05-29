@@ -126,7 +126,7 @@ An agent proposes a memory when it:
 1. **Agent writes proposal** to `.team11/proposals/skill-XXXX.md` or `.team11/proposals/memory-XXXX.md`:
    ```markdown
    # Proposed [Skill|Memory]: [Name]
-   **Source:** Pair [N], [Alpha|Beta], during [task description]
+   **Source:** Pair [name], [agent id], during [task description]
    **Type:** [skill|memory]
    **Confidence:** [high|medium|low]
 

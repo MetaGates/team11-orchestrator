@@ -210,7 +210,7 @@ AVAILABLE MCPs: [list discovered MCP tools]
 
 PAIR: [N]
 PAIR_ID: [pair-N in solo, {prefix}-pair-N in connected, e.g. cs-pair-1]
-AGENT: [Alpha|Beta]
+AGENT: [agent id for this dispatch — freeform, e.g. a/b or 1/2]
 ROLE THIS ROUND: [coder|auditor]
 WORKTREE PATH: [absolute path to permanent worktree, e.g. C:\Users\...\food-aggro-pair-1]
 PARTNER: [the other agent's context — what they're doing]
@@ -234,8 +234,8 @@ PHEROMONE GOTCHAS: [from get_pheromones response for in-scope files — paste ea
 **Rules:**
 - Sequential initialization — deploy pairs one at a time, each sees previous pairs in hive mind
 - Parallel execution — once deployed, all pairs run simultaneously in background
-- Sequential within pairs — Alpha codes first, Beta audits, then they alternate
-- For a single pair: launch Alpha as coder first, then when Alpha completes, launch Beta as auditor with Alpha's changes as context
+- Sequential within pairs — the first dispatch codes, the second audits, then they alternate
+- For a single pair: launch the first dispatch as coder; when it completes, launch the second as auditor with the coder's changes as context
 - Agents work in their permanent worktree directory, NOT the main repo
 - Hive mind file (`.team11/hive.md`) is in the main repo — agents read it there via absolute path (CEO writes it)
 
@@ -247,7 +247,7 @@ Before each major phase transition, pairs write a checkpoint file to `.team11/ch
 ```json
 {
   "pair": 1,
-  "agent": "Alpha",
+  "agent": "a",
   "role": "coder",
   "phase": "coding",
   "task": "Add mobile detection to HUD overlay files",
@@ -362,9 +362,9 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
       "finding": "Missing column whitelist on dynamic update",
       "severity": "critical",
       "category": "security",
-      "auditor": "Beta",
+      "auditor": "b",
       "verdict": "CONFIRMED",
-      "resolved_by": "Alpha",
+      "resolved_by": "a",
       "resolution": "Added whitelist in venues.py:L52",
       "timestamp": "2026-04-01T16:00:00Z",
       "human_approved": true
@@ -489,18 +489,18 @@ All worktrees end up on the same main after their reset. No drift.
 ### Changes Made
 | File | What Changed | Why | Agent |
 |------|-------------|-----|-------|
-| `path:L10-45` | [description] | [reasoning] | [Alpha/Beta] |
+| `path:L10-45` | [description] | [reasoning] | [agent id] |
 
 ### Audit Findings & Resolutions
 | # | Finding | Severity | Category | Verdict | Resolution |
 |---|---------|----------|----------|---------|------------|
-| 1 | [what the auditor found] | major | security | CONFIRMED | [FIXED by Beta: added column whitelist] |
+| 1 | [what the auditor found] | major | security | CONFIRMED | [FIXED by coder: added column whitelist] |
 
 ### Audit Detail
 **Round 1:**
-- Alpha coded: [summary of all changes]
-- Beta audited: [N] findings ([breakdown])
-  - Fixed directly: [list trivial fixes Beta made]
+- Coder ([agent id]) coded: [summary of all changes]
+- Auditor ([agent id]) audited: [N] findings ([breakdown])
+  - Fixed directly: [list trivial fixes the auditor made]
   - Flagged for human: [list substantive issues]
 - Human reviewed: [approved / rejected with feedback / modified] (or "auto-merged via HOTL")
 
