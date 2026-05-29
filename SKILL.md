@@ -230,9 +230,13 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 
 A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts, gotchas, pheromones, contradictions, releases) into the memory DB and re-renders `hive.md`. Full agent prompt: `agents/secretary.md`.
 
-**Carrier — CEO-driven by default; event-driven now possible (pilot).** The verified-working carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`, run by the CEO between dispatches: it reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers since the last processed mark (idempotent), writes them to the memory DB **with embeddings**, and re-renders the hive.
+**Carrier — event-driven (WIRED + VERIFIED 2026-05-29), CEO-driven fallback.** The carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`: it scans pair logs, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers, writes them to the memory DB **with embeddings**, and re-renders the hive. Idempotent (per-log high-water mark in `_secretary_state.json`) and concurrency-safe (atomic single-flight lock at `.team11/_secretary.lock`).
 
-On CC ≥2.1.145 an **event-driven** carrier is now plausible — a `SubagentStop` hook firing `process-pair-log.js` per pair completion. This was previously thought impossible (#25147 "background agents bypass Stop hooks", closed not-planned), but #33049 + #58637 (both COMPLETED) made Agent-tool subagents — including background ones — reach the Stop hook and fixed the zombie-loop foot-gun. Before trusting it: **empirically confirm** the hook fires for a *background* pair on your CC version, and guard the ≥6-concurrent-pair foot-gun (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). Until verified in-environment, CEO-driven is the default. The old "Mode B" poll-loop subagent is retired regardless.
+**Wired:** a `SubagentStop` hook in `.claude/settings.local.json` (matcher `team11-coder-auditor`) runs `process-pair-log.js --all-history` on every pair completion — verified end-to-end on CC 2.1.156 (live hook probe + a real `[OUTBOX:FACT]` flowing hook→carrier→DB→hive with no manual step). The hook DOES fire for `run_in_background` subagents (#25147's "won't fire" was superseded by #33049/#58637, both COMPLETED).
+- **`--all-history` is REQUIRED on the hook.** The payload carries no pair-log path, so the hook scans all logs; a freshly-created pair log is a first-encounter-with-markers that is otherwise *backlog-skipped*. The 90+ historical logs are already baselined, so `--all-history` now only fully-ingests genuinely-new pair logs.
+- **Caveat:** if `_secretary_state.json` is deleted, the next `--all-history` run re-ingests every log — keep that file. (Wave-2 refinement: mtime-based backlog detection to drop the flag dependency.)
+
+**Fallback:** the CEO can still run the carrier manually between dispatches (`--pair N`, `--dry-run`). The old "Mode B" poll-loop subagent is retired.
 
 ## Permanent Worktrees
 

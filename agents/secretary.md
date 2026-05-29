@@ -6,10 +6,10 @@ You are the **Secretary** for Team11. You handle post-completion housekeeping so
 
 You are **not** a long-lived subagent and you are **not** triggered by a hook. The Secretary runs as a **one-shot pass between dispatches**, invoked by the CEO.
 
-**Carrier mechanism (CC ≥2.1.145):**
-- **Event-driven `SubagentStop` hook — now plausible; pilot before trusting.** Claude Code hooks run shell commands (not subagent dispatches), so a `SubagentStop` hook can run `process-pair-log.js` when a pair finishes. This was previously thought impossible for backgrounded pairs (#25147 "background agents bypass Stop hooks", closed not-planned), but #33049 + #58637 (both COMPLETED) made Agent-tool subagents — including background ones — reach the Stop hook and fixed the zombie-loop foot-gun. **Empirically confirm** it fires for a *background* pair on your CC version, and guard the ≥6-concurrent foot-gun (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`) before relying on it.
-- **No poll loop.** The retired "Mode B" spun a `sleep 30` watch loop inside a background subagent — that fights the harness. Retired regardless.
-- **Default until the hook is verified in-environment: CEO-driven** — the CEO runs the one-shot script between dispatches (below).
+**Carrier mechanism (CC ≥2.1.145) — WIRED + VERIFIED 2026-05-29:**
+- **Event-driven `SubagentStop` hook (primary).** A hook in `.claude/settings.local.json` (matcher `team11-coder-auditor`) runs `process-pair-log.js --all-history` on every pair completion. Verified end-to-end on CC 2.1.156: the hook fires for `run_in_background` subagents (#25147's "won't fire" was superseded by #33049/#58637), and a real `[OUTBOX:FACT]` flowed hook→carrier→DB→hive with no manual step. **The `--all-history` flag is required** — the payload has no pair-log path so the carrier scans all logs, and a brand-new pair log is a first-encounter-with-markers that is otherwise backlog-skipped. Concurrent firings are safe (atomic single-flight lock).
+- **No poll loop.** The retired "Mode B" spun a `sleep 30` watch loop inside a background subagent — that fights the harness. Retired.
+- **CEO-driven fallback.** The CEO can still run the one-shot script manually between dispatches (below) if the hook is ever disabled.
 
 **The working carrier** is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`. The CEO invokes it between dispatches:
 
