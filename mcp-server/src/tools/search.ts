@@ -15,7 +15,10 @@ export function registerSearchTools(
       query: z
         .string()
         .describe(
-          'Search query (supports AND, OR, NOT, "phrases", prefix*)',
+          "Free-text search query. Keywords are extracted (stopwords removed, " +
+            "identifiers/paths split into tokens) and matched as OR-of-keywords — " +
+            "any matching keyword returns the entry, ranked by BM25 relevance. " +
+            "Boolean/phrase/prefix operators are NOT honored.",
         ),
       type_filter: z
         .enum([
@@ -44,11 +47,17 @@ export function registerSearchTools(
       }
 
       const ftsQuery = buildFtsQuery(keywords);
+      // Exclude archived (superseded_by = -1) AND consolidate merge-losers
+      // (superseded_by = positive keeper id). Mirrors recall.ts:58 — the single
+      // active predicate every other tool uses. Without it, archived rows are
+      // returned AND the touchManyOnRead below would reset their decay timer,
+      // un-archiving them.
       let sql = `
         SELECT f.*, bm25(findings_fts, 10.0, 1.0, 2.0) as relevance
         FROM findings_fts fts
         JOIN findings f ON f.id = fts.rowid
         WHERE findings_fts MATCH ?
+          AND (f.superseded_by IS NULL OR f.superseded_by = 0)
       `;
       const params: any[] = [ftsQuery];
 
@@ -63,7 +72,8 @@ export function registerSearchTools(
       const results = db.prepare(sql).all(...params) as Array<{ id: number }>;
 
       // Usage-weighted decay: touching returned entries bumps last_reinforced
-      // so they re-enter the 14-day grace period (see decay.ts).
+      // so they re-enter the 14-day grace period (see decay.ts). Safe to touch
+      // all results — the query above already excludes archived/superseded rows.
       touchManyOnRead(db, results.map((r) => r.id));
 
       return {
@@ -98,10 +108,16 @@ export function registerSearchTools(
         .optional()
         .default(30)
         .describe("Only show entries from the last N days"),
+      include_archived: z.boolean().optional().default(false),
     },
-    async ({ type_filter, limit, days }) => {
+    async ({ type_filter, limit, days, include_archived }) => {
       let sql = `SELECT * FROM findings WHERE created_at >= datetime('now', ?)`;
       const params: any[] = [`-${days} days`];
+
+      // Exclude archived/superseded by default, consistent with list_stale.
+      if (!include_archived) {
+        sql += ` AND (superseded_by IS NULL OR superseded_by = 0)`;
+      }
 
       if (type_filter && type_filter !== "all") {
         sql += ` AND type = ?`;
@@ -128,23 +144,33 @@ export function registerSearchTools(
     "Show statistics about Team11's persistent memory database.",
     {},
     async () => {
+      // Active corpus only — exclude archived (superseded_by = -1) and
+      // consolidate merge-losers (positive keeper id). Counting them overstates
+      // the live corpus and disagrees with health_check. The separate `archived`
+      // count below preserves visibility (consistent with health_check).
+      const ACTIVE = `(superseded_by IS NULL OR superseded_by = 0)`;
       const stats = {
         total: db
-          .prepare(`SELECT COUNT(*) as count FROM findings`)
+          .prepare(`SELECT COUNT(*) as count FROM findings WHERE ${ACTIVE}`)
+          .get(),
+        archived: db
+          .prepare(
+            `SELECT COUNT(*) as count FROM findings WHERE superseded_by IS NOT NULL AND superseded_by != 0`,
+          )
           .get(),
         by_type: db
           .prepare(
-            `SELECT type, COUNT(*) as count FROM findings GROUP BY type`,
+            `SELECT type, COUNT(*) as count FROM findings WHERE ${ACTIVE} GROUP BY type`,
           )
           .all(),
         by_confidence: db
           .prepare(
-            `SELECT confidence, COUNT(*) as count FROM findings GROUP BY confidence`,
+            `SELECT confidence, COUNT(*) as count FROM findings WHERE ${ACTIVE} GROUP BY confidence`,
           )
           .all(),
         recent_7d: db
           .prepare(
-            `SELECT COUNT(*) as count FROM findings WHERE created_at >= datetime('now', '-7 days')`,
+            `SELECT COUNT(*) as count FROM findings WHERE created_at >= datetime('now', '-7 days') AND ${ACTIVE}`,
           )
           .get(),
         pheromones: db
@@ -152,12 +178,12 @@ export function registerSearchTools(
           .get(),
         oldest: db
           .prepare(
-            `SELECT created_at FROM findings ORDER BY created_at ASC LIMIT 1`,
+            `SELECT created_at FROM findings WHERE ${ACTIVE} ORDER BY created_at ASC LIMIT 1`,
           )
           .get(),
         newest: db
           .prepare(
-            `SELECT created_at FROM findings ORDER BY created_at DESC LIMIT 1`,
+            `SELECT created_at FROM findings WHERE ${ACTIVE} ORDER BY created_at DESC LIMIT 1`,
           )
           .get(),
       };

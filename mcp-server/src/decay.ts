@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { parseSqliteUtc } from "./scoring.js";
 
 /**
  * Confidence decay engine for Team11 Memory — v2 (2026-04-22).
@@ -31,7 +32,20 @@ export interface DecayResult {
  *
  * - Within GRACE_PERIOD_DAYS of last_reinforced: no decay (returns null).
  * - After grace: exponential decay at DECAY_RATE per week measured from the
- *   grace-period boundary, not from last_reinforced itself.
+ *   grace-period boundary, computed from a STABLE base of 1.0 — NOT from the
+ *   row's current (possibly already-decayed) confidence.
+ *
+ * Decaying from a stable base makes runDecay idempotent: for a fixed
+ * last_reinforced, re-running yields the same target confidence
+ * (1.0 * 0.95^weeksAfterGrace) instead of compounding the prior run's result
+ * (the old `currentConfidence * 0.95^weeks` re-fed the persisted decayed score
+ * back in while weeksAfterGrace was re-measured from the same fixed boundary,
+ * so day-28-twice gave 0.95^2*... = 0.814 instead of the intended 0.9025).
+ * reinforce() / touchOnRead() advance last_reinforced, which is what actually
+ * resets the decay clock.
+ *
+ * `currentConfidence` is retained in the signature for call-site compatibility
+ * but is intentionally NOT used in the decay math (see above).
  *
  * Returns null if the entry is in grace period (caller preserves existing confidence).
  */
@@ -39,15 +53,16 @@ export function calculateConfidence(
   lastReinforced: string,
   currentConfidence: number,
 ): number | null {
+  void currentConfidence; // intentionally unused — decay is from a stable base
   const now = new Date();
-  const reinforced = new Date(lastReinforced);
+  const reinforced = new Date(parseSqliteUtc(lastReinforced));
   const daysSince =
     (now.getTime() - reinforced.getTime()) / (1000 * 60 * 60 * 24);
   if (daysSince < GRACE_PERIOD_DAYS) {
     return null; // Grace — do not decay
   }
   const weeksAfterGrace = (daysSince - GRACE_PERIOD_DAYS) / 7;
-  const decayed = currentConfidence * Math.pow(1 - DECAY_RATE, weeksAfterGrace);
+  const decayed = 1.0 * Math.pow(1 - DECAY_RATE, weeksAfterGrace);
   return Math.max(0, decayed);
 }
 
@@ -90,11 +105,20 @@ export function runDecay(db: Database.Database): DecayResult {
       skipped_grace++;
       continue; // Still in grace period — don't touch
     }
-    if (Math.abs(newConfidence - currentConfidence) > 0.01) {
-      updateStmt.run(newConfidence, f.id);
-      updated++;
+    // Only act when the score actually moved this run. A row whose computed
+    // confidence is unchanged (delta <= 0.01) is in steady-state: it was
+    // written AND classified on the earlier run that crossed the threshold, so
+    // re-flagging it here would double-count the same untouched row every run.
+    // (Archived rows can't reach this point — the SELECT above already excludes
+    // superseded_by = -1, which is why the old `superseded_by !== -1` guard was
+    // dead and has been removed.)
+    const changed = Math.abs(newConfidence - currentConfidence) > 0.01;
+    if (!changed) {
+      continue;
     }
-    if (newConfidence < ARCHIVE_THRESHOLD && f.superseded_by !== -1) {
+    updateStmt.run(newConfidence, f.id);
+    updated++;
+    if (newConfidence < ARCHIVE_THRESHOLD) {
       archiveStmt.run(f.id);
       archived++;
       archivedEntries.push({
@@ -128,7 +152,7 @@ export function runDecay(db: Database.Database): DecayResult {
 export function reinforce(db: Database.Database, findingId: number): void {
   db.prepare(
     `UPDATE findings SET
-       confidence_score = MIN(1.0, COALESCE(confidence_score, 0.5) + ?),
+       confidence_score = MIN(1.0, COALESCE(confidence_score, 1.0) + ?),
        last_reinforced = datetime('now'),
        updated_at = datetime('now')
      WHERE id = ?`,
@@ -142,6 +166,21 @@ export function reinforce(db: Database.Database, findingId: number): void {
  * return an entry. Updates last_reinforced so the entry re-enters grace
  * period, but does NOT bump confidence_score — read access is a weaker
  * signal than an explicit [REINFORCED] marker.
+ *
+ * DESIGN NOTE (grace-timer immortality, decay audit 2026-05-29):
+ * Because this resets last_reinforced on EVERY read, any entry that keeps
+ * getting returned by search/recall re-enters the 14-day grace window forever
+ * and can never decay — i.e. frequently-read entries are effectively immortal.
+ * This is PARTLY BY DESIGN ("access IS reinforcement" — a fact the team keeps
+ * looking up is presumably still relevant). The tension: last_reinforced is
+ * doing double duty as both the ranking-recency signal AND the decay clock, so
+ * we can't suppress the immortality here without also degrading recency ranking
+ * or weakening the intended reinforcement semantics. The real fix is a SCHEMA
+ * change — split last_accessed (drives recency in scoring.ts) from
+ * last_reinforced (drives decay here) and only let explicit reinforce() / the
+ * [REINFORCED] marker move the decay clock. That is intentionally DEFERRED (no
+ * migration in this pass); a throttle in-file would be a risky behavior change
+ * to a by-design path, so it is not applied here.
  */
 export function touchOnRead(db: Database.Database, findingId: number): void {
   db.prepare(

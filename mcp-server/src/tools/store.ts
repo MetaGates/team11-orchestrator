@@ -22,12 +22,19 @@ async function storeEmbedding(db: Database.Database, findingId: number | bigint,
   if (!vector) return;
 
   const vectorBlob = Buffer.from(vector.buffer);
+  const id = Number(findingId);
 
-  // Store in vec0 virtual table
-  db.prepare(`INSERT OR REPLACE INTO findings_vec (finding_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(Number(findingId), vectorBlob);
-
-  // Store in cache
-  db.prepare(`INSERT OR REPLACE INTO embedding_cache (finding_id, content_hash, embedding) VALUES (?, ?, ?)`).run(Number(findingId), contentHash, vectorBlob);
+  // Both writes must land together or not at all: the embedding_cache hash is the
+  // short-circuit guard at the top of this function, so a crash AFTER the vec
+  // insert but BEFORE the cache insert (or vice versa) would permanently desync
+  // the two — the cache would say "up to date" while findings_vec held a stale or
+  // missing vector. better-sqlite3 transactions are synchronous, and the only
+  // async step (embed) already completed above, so this wraps cleanly.
+  const writeBoth = db.transaction((blob: Buffer, hash: string) => {
+    db.prepare(`INSERT OR REPLACE INTO findings_vec (finding_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(id, blob);
+    db.prepare(`INSERT OR REPLACE INTO embedding_cache (finding_id, content_hash, embedding) VALUES (?, ?, ?)`).run(id, hash, blob);
+  });
+  writeBoth(vectorBlob, contentHash);
 }
 
 export function registerStoreTools(

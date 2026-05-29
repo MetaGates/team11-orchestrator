@@ -75,6 +75,7 @@ export function registerRecallTools(
             FROM findings_vec v
             JOIN findings f ON f.id = v.finding_id
             WHERE v.embedding MATCH ? AND k = 30
+              AND (f.superseded_by IS NULL OR f.superseded_by = 0)
             ORDER BY v.distance
           `,
             )
@@ -99,12 +100,14 @@ export function registerRecallTools(
         return b.composite_score - a.composite_score;
       });
 
-      // Token budget enforcement — reserve 500 tokens for envelope
+      // Token budget enforcement — reserve 500 tokens for envelope.
+      // Skip-and-continue (not break): a single oversized high-rank entry must
+      // not drop every smaller, lower-ranked entry after it.
       let tokenBudget = max_tokens - 500;
       const included: any[] = [];
       for (const r of scored) {
         const est = estimateTokens(r.title + r.content);
-        if (tokenBudget - est < 0) break;
+        if (tokenBudget - est < 0) continue;
         tokenBudget -= est;
         included.push(r);
 
@@ -119,17 +122,31 @@ export function registerRecallTools(
         ).run(r.id);
       }
 
-      // Pheromone lookup by keyword match
-      const pheromonePattern = `%${keywords.join("%")}%`;
+      // Pheromone lookup by keyword match.
+      // Per-keyword OR-expansion: ANY keyword matching ANY of the three columns
+      // is a hit. The previous `%kw1%kw2%kw3%` single pattern required all
+      // keywords to appear in that exact left-to-right order (ordered-AND),
+      // which returned zero pheromones on any reordering. Each clause is a
+      // bound parameter — no string interpolation into SQL.
+      const pheromoneColumns = ["task", "files_touched", "gotchas"];
+      const pheromoneClauses: string[] = [];
+      const pheromoneParams: string[] = [];
+      for (const keyword of keywords) {
+        const likeParam = `%${keyword}%`;
+        for (const column of pheromoneColumns) {
+          pheromoneClauses.push(`${column} LIKE ?`);
+          pheromoneParams.push(likeParam);
+        }
+      }
       const pheromones = db
         .prepare(
           `
         SELECT * FROM pheromones
-        WHERE task LIKE ? OR files_touched LIKE ? OR gotchas LIKE ?
+        WHERE ${pheromoneClauses.join(" OR ")}
         ORDER BY created_at DESC LIMIT 10
       `,
         )
-        .all(pheromonePattern, pheromonePattern, pheromonePattern);
+        .all(...pheromoneParams);
 
       const response = {
         query: task_description,
@@ -147,12 +164,25 @@ export function registerRecallTools(
         facts: included
           .filter((r: any) => r.type === "fact")
           .map(summarize),
+        // 'architecture' is a valid type in the schema enum (store.ts) and in
+        // the search/list type filters. Without this bucket an architecture row
+        // that ranks high is counted in results_count, charges the token budget,
+        // and is reinforced on access — yet never appears in the output.
+        architecture: included
+          .filter((r: any) => r.type === "architecture")
+          .map(summarize),
         pheromones: pheromones.map((p: any) => ({
           task: p.task,
+          pair: p.pair,
           difficulty: p.difficulty,
           files: safeJsonParse(p.files_touched, []),
           gotchas: safeJsonParse(p.gotchas, []),
           duration_minutes: p.duration_minutes,
+          estimated_duration_minutes: p.estimated_duration_minutes,
+          rounds: p.rounds,
+          findings_count: p.findings_count,
+          verdict_breakdown: safeJsonParse(p.verdict_breakdown, null),
+          created_at: p.created_at,
         })),
       };
 
@@ -208,7 +238,11 @@ function summarize(r: any) {
     title: r.title,
     type: r.type,
     confidence: r.confidence,
-    score: Math.round(r.composite_score * 100) / 100,
+    // `score` reflects the PRIMARY sort key (RRF) — the list is ordered by
+    // rrf_score first, composite_score only as a tiebreaker (see the sort
+    // comparator). Reporting composite_score as `score` mislabeled the rank.
+    score: Math.round((r.rrf_score ?? 0) * 10000) / 10000,
+    composite_score: Math.round((r.composite_score ?? 0) * 100) / 100,
     created_at: r.created_at,
     summary:
       r.content.length > 200

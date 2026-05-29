@@ -43,9 +43,28 @@ export function computeCompositeScore(result: ScoredFields): number {
 }
 
 function daysBetween(dateStr: string, now: Date): number {
-  const date = new Date(dateStr);
+  const date = new Date(parseSqliteUtc(dateStr));
   const ms = now.getTime() - date.getTime();
   return Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24)));
+}
+
+/**
+ * SQLite stores datetime('now') as a UTC string "YYYY-MM-DD HH:MM:SS" with no
+ * timezone marker. `new Date(str)` on that bare form parses it as host-LOCAL
+ * time, skewing every elapsed-time calc by the host's UTC offset. Normalize to
+ * an explicit UTC ISO form ("YYYY-MM-DDTHH:MM:SSZ") so parsing is offset-stable.
+ * Strings that already carry a zone (trailing Z or +/-HH:MM, or ISO 'T') are
+ * passed through unchanged.
+ */
+export function parseSqliteUtc(dateStr: string): string {
+  if (/[zZ]$/.test(dateStr) || /[+-]\d{2}:?\d{2}$/.test(dateStr)) {
+    return dateStr;
+  }
+  const m = dateStr.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/);
+  if (m) {
+    return `${m[1]}T${m[2]}Z`;
+  }
+  return dateStr;
 }
 
 /**

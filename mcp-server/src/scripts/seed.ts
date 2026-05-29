@@ -2,8 +2,8 @@ import Database from "better-sqlite3";
 import { readdirSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { createHash } from "crypto";
-import { initEmbeddings, embed, embeddingsAvailable } from "../embeddings.js";
+import { initEmbeddings, embeddingsAvailable } from "../embeddings.js";
+import { storeEmbedding } from "../tools/store.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,26 +118,18 @@ if (existsSync(findingsDir)) {
   console.log("No findings directory found, skipping");
 }
 
-// Generate embeddings for all findings that don't have one yet
+// Generate embeddings for all findings that don't have one yet.
+// Reuse storeEmbedding (the single source of truth for the hash-check +
+// transactional vec/cache write) so a model swap invalidates seed vectors the
+// same way it does for live writes — no parallel copy of the insert logic here.
 if (embeddingsAvailable()) {
   const allFindings = db.prepare(`SELECT id, title, content FROM findings`).all() as { id: number; title: string; content: string }[];
   let embeddedCount = 0;
   for (const finding of allFindings) {
-    const text = `${finding.title} ${finding.content}`;
-    const contentHash = createHash("sha256").update(text).digest("hex");
-
-    // Skip if already cached with same hash
-    const cached = db.prepare(`SELECT content_hash FROM embedding_cache WHERE finding_id = ?`).get(finding.id) as { content_hash: string } | undefined;
-    if (cached && cached.content_hash === contentHash) continue;
-
-    const vector = await embed(text);
-    if (!vector) continue;
-
-    const vectorBlob = Buffer.from(vector.buffer);
-    const findingId = Number(finding.id);
-    db.prepare(`INSERT OR REPLACE INTO findings_vec (finding_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(findingId, vectorBlob);
-    db.prepare(`INSERT OR REPLACE INTO embedding_cache (finding_id, content_hash, embedding) VALUES (?, ?, ?)`).run(findingId, contentHash, vectorBlob);
-    embeddedCount++;
+    const before = db.prepare(`SELECT content_hash FROM embedding_cache WHERE finding_id = ?`).get(finding.id) as { content_hash: string } | undefined;
+    await storeEmbedding(db, finding.id, `${finding.title} ${finding.content}`);
+    const after = db.prepare(`SELECT content_hash FROM embedding_cache WHERE finding_id = ?`).get(finding.id) as { content_hash: string } | undefined;
+    if (after && after.content_hash !== before?.content_hash) embeddedCount++;
   }
   console.log(`Generated embeddings for ${embeddedCount} findings`);
 } else {

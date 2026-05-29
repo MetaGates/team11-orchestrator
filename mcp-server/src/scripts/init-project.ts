@@ -19,7 +19,7 @@
 import { existsSync, mkdirSync, writeFileSync, readFileSync, copyFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -151,11 +151,22 @@ function main() {
 
   // 6. Create/update .mcp.json
   const mcpJsonPath = join(projectRoot, ".mcp.json");
-  let mcpConfig: any = {};
+  let mcpConfig: any = { mcpServers: {} };
   if (existsSync(mcpJsonPath)) {
-    try { mcpConfig = JSON.parse(readFileSync(mcpJsonPath, "utf8")); } catch { /* fresh */ }
+    try {
+      const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf8"));
+      // Valid JSON can still be null / an array / a primitive. Only adopt it
+      // when it's a real object — otherwise the `.mcpServers` access below
+      // would throw (null) or corrupt the file (array/primitive) OUTSIDE this
+      // try, aborting init mid-run. Bad/missing → fall back to a fresh object.
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        mcpConfig = parsed;
+      }
+    } catch { /* malformed JSON — keep the fresh default */ }
   }
-  if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
+  if (!mcpConfig.mcpServers || typeof mcpConfig.mcpServers !== "object" || Array.isArray(mcpConfig.mcpServers)) {
+    mcpConfig.mcpServers = {};
+  }
   if (!mcpConfig.mcpServers["team11-memory"]) {
     mcpConfig.mcpServers["team11-memory"] = {
       command: "node",
@@ -172,16 +183,18 @@ function main() {
 
   // 7. Initialize the database
   try {
-    const dbPath = join(team11Dir, "memory.db");
-    // Dynamic import of the built db module
-    const initScript = `
-      import { initDb } from './dist/db.js';
-      const db = initDb('${dbPath.replace(/\\/g, "/")}');
-      const tables = db.prepare("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'").get();
-      console.log(JSON.stringify(tables));
-      db.close();
-    `;
-    const result = execSync(`node --input-type=module -e "${initScript.replace(/"/g, '\\"').replace(/\n/g, " ")}"`, {
+    const dbPath = join(team11Dir, "memory.db").replace(/\\/g, "/");
+    // Run the freshly-built dist/db.js::initDb in a separate node process via
+    // execFileSync (argv form, NO shell) — mirrors cli-template.ts. Paths are
+    // embedded with JSON.stringify and passed as a -e argument, so no shell
+    // metacharacter in any path can be interpreted (RCE-class fix; sibling
+    // cli/summaries were hardened in 45eb4a576, this call site was missed).
+    const initScript =
+      `import { initDb } from './dist/db.js'; ` +
+      `const db = initDb(${JSON.stringify(dbPath)}); ` +
+      `const tables = db.prepare("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'").get(); ` +
+      `console.log(JSON.stringify(tables)); db.close();`;
+    const result = execFileSync(process.execPath, ["--input-type=module", "-e", initScript], {
       cwd: destMcpServer,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],

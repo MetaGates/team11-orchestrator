@@ -811,8 +811,19 @@ function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = { allHistory: false, dryRun: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === "--pair") args.pair = argv[++i];
-    else if (a === "--log") args.log = argv[++i];
+    if (a === "--pair") {
+      // Validate eagerly: a bare `--pair` (missing value), `--pair ""`, or
+      // `--pair --dry-run` (value swallows the next flag) would otherwise build
+      // `pair-undefined.md` / `pair-.md` / `pair---dry-run.md` and then fail
+      // opaquely in resolveLogPathSafe. Fail fast with a clear message instead.
+      const val = argv[++i];
+      if (val === undefined || val.trim() === "" || val.startsWith("--")) {
+        throw new Error(
+          `--pair requires a non-empty pair id (e.g. --pair 3); got ${val === undefined ? "no value" : JSON.stringify(val)}`,
+        );
+      }
+      args.pair = val;
+    } else if (a === "--log") args.log = argv[++i];
     else if (a === "--project") args.projectRoot = argv[++i];
     else if (a === "--all-history") args.allHistory = true;
     else if (a === "--dry-run") args.dryRun = true;
@@ -846,7 +857,11 @@ function resolveTargets(args: CliArgs): { projectRoot: string; logs: string[] } 
     return { projectRoot, logs: [resolveLogPathSafe(projectRoot, singleLog)] };
   }
   if (args.pair) {
-    const candidate = join("\.team11", "logs", `pair-${args.pair}.md`);
+    // ".team11" — plain segment, NOT an escape. The previous "\.team11" read as
+    // a backslash-escape; `\.` is an unknown JS escape that collapses to ".", so
+    // the resolved path was unchanged but the source was misleading. Use the
+    // posix separator-free segment and let join() insert the platform separator.
+    const candidate = join(".team11", "logs", `pair-${args.pair}.md`);
     return { projectRoot, logs: [resolveLogPathSafe(projectRoot, candidate)] };
   }
   return { projectRoot, logs: discoverPairLogs(projectRoot) };

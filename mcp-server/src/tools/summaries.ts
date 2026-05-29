@@ -23,8 +23,15 @@ function computeBlobSha(filePath: string, projectRoot: string): string {
       timeout: 5000,
     }).trim();
     if (sha) return sha;
-  } catch {
-    // Fall through to content hash
+  } catch (err) {
+    // Fall through to content hash. Log the fallback so a silent flip from the
+    // git-blob keyspace to the sha256 keyspace (e.g. git missing, repo not
+    // initialised, or hash-object failing) is observable — it permanently
+    // changes the summary cache key for this file. Behavior is unchanged.
+    console.error(
+      `[team11-memory] git hash-object failed for ${absPath} (cwd=${projectRoot}); ` +
+        `falling back to sha256 content hash: ${(err as Error)?.message ?? err}`,
+    );
   }
   // Fallback: sha256 of file content (for untracked/dirty files)
   const content = readFileSync(absPath);

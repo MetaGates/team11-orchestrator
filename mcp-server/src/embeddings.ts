@@ -3,6 +3,14 @@ import { pipeline, type FeatureExtractionPipeline } from "@huggingface/transform
 /** Canonical model name — import this instead of hardcoding the string. */
 export const EMBEDDING_MODEL = "all-MiniLM-L6-v2";
 
+/**
+ * Embedding dimensionality. MUST match the vec0 column width in db.ts
+ * (`findings_vec.embedding float[384]`). A vector of any other length would be
+ * silently rejected/truncated by the vec table or, worse, mean-pooled against a
+ * mismatched accumulator — so we assert it before storing or pooling.
+ */
+export const EMBEDDING_DIM = 384;
+
 let embedder: FeatureExtractionPipeline | null = null;
 
 /**
@@ -26,6 +34,21 @@ const CHUNK_SIZE = 1000;
 const MAX_CHUNKS = 5;
 
 /**
+ * Fail-fast guard: a model returning a vector whose width != EMBEDDING_DIM is a
+ * configuration error (wrong model loaded) that would otherwise be written to
+ * the float[384] vec0 column and corrupt vector search. Throwing here is caught
+ * by embed()'s try/catch and surfaced as a null embedding plus a logged error,
+ * which the callers (storeEmbedding, seed) already treat as "skip this row".
+ */
+function assertDim(vec: Float32Array, where: string): void {
+  if (vec.length !== EMBEDDING_DIM) {
+    throw new Error(
+      `[team11-memory] embedding dimension mismatch in ${where}: got ${vec.length}, expected ${EMBEDDING_DIM}`,
+    );
+  }
+}
+
+/**
  * Generate embedding vector for text.
  * Returns Float32Array of 384 dimensions (for MiniLM-L6-v2).
  * Returns null if embeddings not initialized.
@@ -42,7 +65,9 @@ export async function embed(text: string): Promise<Float32Array | null> {
     // Short path: single embed, unchanged behavior (no averaging artifacts).
     if (text.length <= CHUNK_SIZE) {
       const output = await embedder(text, { pooling: "mean", normalize: true });
-      return new Float32Array(output.data as Float32Array);
+      const vec = new Float32Array(output.data as Float32Array);
+      assertDim(vec, "short-path embed");
+      return vec;
     }
 
     // Long path: chunk -> embed each -> mean-pool -> re-normalize.
@@ -51,18 +76,19 @@ export async function embed(text: string): Promise<Float32Array | null> {
       chunks.push(text.substring(i, i + CHUNK_SIZE));
     }
 
-    let pooled: Float32Array | null = null;
+    // Size the accumulator from EMBEDDING_DIM (not the first chunk's length), and
+    // assert every chunk vector matches it — a wrong-width vector must never be
+    // pooled (it would either throw on index, or silently corrupt the result).
+    const pooled = new Float32Array(EMBEDDING_DIM);
     for (const chunk of chunks) {
       const output = await embedder(chunk, { pooling: "mean", normalize: true });
       const vec = output.data as Float32Array;
-      if (!pooled) {
-        pooled = new Float32Array(vec.length);
-      }
+      assertDim(vec, "long-path chunk embed");
       for (let d = 0; d < pooled.length; d++) {
         pooled[d] += vec[d];
       }
     }
-    if (!pooled) return null;
+    if (chunks.length === 0) return null;
 
     // Component-wise average.
     for (let d = 0; d < pooled.length; d++) {
@@ -99,5 +125,5 @@ export function embeddingsAvailable(): boolean {
  * Get embedding dimensions.
  */
 export function embeddingDimensions(): number {
-  return 384; // all-MiniLM-L6-v2
+  return EMBEDDING_DIM; // all-MiniLM-L6-v2
 }

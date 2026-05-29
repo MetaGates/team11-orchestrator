@@ -3,11 +3,14 @@ const path = require('path');
 
 const baseDir = __dirname;
 
-// Embedded source files. This list MUST mirror the live `src/` tree (minus the
-// two CLI-bundle artifacts cli.ts + cli-template.ts, which are never embedded
-// in themselves). The init() path no longer reads this snapshot — it copies the
-// live tree via copyLiveSource (D3 fix) — but the embedded copy is retained as a
-// diff reference, so it must stay current. If you add a source file, add it here.
+// Source-file MANIFEST. This list MUST mirror the live `src/` tree (minus the
+// two CLI-bundle artifacts cli.ts + cli-template.ts, which never list
+// themselves). init() copies the live tree via copyLiveSource (D3 fix) — the
+// old embedded snapshot (writeSourceFiles) has been removed from cli-template.ts
+// to drop ~177KB of bloat from the generated cli.ts. This manifest is no longer
+// injected anywhere; it survives only as a drift INVARIANT — the guards below
+// fail the build if the manifest and the live src/ tree disagree in EITHER
+// direction. If you add or remove a source file, update this list to match.
 const sourceFiles = [
   'src/index.ts',
   'src/db.ts',
@@ -34,8 +37,8 @@ const sourceFiles = [
   'src/scripts/consolidate-memory.ts',
 ];
 
-// Fail loudly if the embed list drifts from the live tree — a missing file here
-// means the bundle would ship an incomplete diff reference (the original staleness bug).
+// Fail loudly if the manifest drifts from the live tree in EITHER direction —
+// this is the whole reason the file still keeps a sourceFiles list.
 const liveTsFiles = [];
 (function walk(dir, rel) {
   for (const entry of fs.readdirSync(path.join(baseDir, dir))) {
@@ -49,25 +52,37 @@ const liveTsFiles = [];
     }
   }
 })('src', '');
+
+// Forward: a live .ts file that the manifest forgot to list.
 const missing = liveTsFiles.filter((f) => !sourceFiles.includes(f));
 if (missing.length > 0) {
   console.error('ERROR: live source files missing from generate-cli.cjs sourceFiles list:\n  ' + missing.join('\n  '));
-  console.error('Add them to the sourceFiles array (the embedded snapshot must mirror the live tree).');
+  console.error('Add them to the sourceFiles array (the manifest must mirror the live tree).');
   process.exit(1);
 }
 
-const fileEntries = [];
-for (const f of sourceFiles) {
-  const content = fs.readFileSync(path.join(baseDir, f), 'utf8');
-  fileEntries.push('  files.push({ path: ' + JSON.stringify(f) + ', content: ' + JSON.stringify(content) + ' });\n');
+// Reverse: a manifest entry that no longer exists on disk (renamed/deleted file
+// the list still references). The forward guard alone would miss this.
+const stale = sourceFiles.filter((f) => !fs.existsSync(path.join(baseDir, f)));
+if (stale.length > 0) {
+  console.error('ERROR: generate-cli.cjs sourceFiles entries not found on disk:\n  ' + stale.join('\n  '));
+  console.error('Remove or rename them in the sourceFiles array (the manifest must mirror the live tree).');
+  process.exit(1);
 }
 
-const writeSourceFnBody = fileEntries.join('\n');
-
-// Read the CLI template file and inject the writeSourceFiles body
+// The embedded snapshot is gone — cli.ts is now just the built copy of the
+// template (init copies the live src/ tree via copyLiveSource). Generate by
+// straight copy. Guard against the old placeholder reappearing: if it's back,
+// a stale writeSourceFiles/embedded-snapshot has been reintroduced — fail
+// rather than silently ship an un-injected (or re-bloated) cli.ts.
 const template = fs.readFileSync(path.join(baseDir, 'src', 'cli-template.ts'), 'utf8');
-const fullCli = template.replace('/* __EMBEDDED_SOURCE_FILES__ */', writeSourceFnBody);
+if (template.includes('__EMBEDDED_SOURCE_FILES__')) {
+  console.error('ERROR: cli-template.ts still contains the __EMBEDDED_SOURCE_FILES__ placeholder.');
+  console.error('The embedded snapshot was removed (init uses copyLiveSource). Remove the dead');
+  console.error('writeSourceFiles function + placeholder from cli-template.ts before regenerating.');
+  process.exit(1);
+}
 
-fs.writeFileSync(path.join(baseDir, 'src', 'cli.ts'), fullCli);
-console.log('Generated src/cli.ts with ' + sourceFiles.length + ' embedded source files');
-console.log('File size: ' + fullCli.length + ' bytes');
+fs.writeFileSync(path.join(baseDir, 'src', 'cli.ts'), template);
+console.log('Generated src/cli.ts (template copy; manifest validated against ' + sourceFiles.length + ' source files)');
+console.log('File size: ' + template.length + ' bytes');

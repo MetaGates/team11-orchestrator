@@ -170,9 +170,23 @@ function init() {
   let mcpConfig: Record<string, unknown> = { mcpServers: {} };
   if (existsSync(mcpJsonPath)) {
     try {
-      mcpConfig = JSON.parse(readFileSync(mcpJsonPath, "utf8"));
-      if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-    } catch { /* start fresh */ }
+      const parsed = JSON.parse(readFileSync(mcpJsonPath, "utf8"));
+      // Valid JSON can still be null / an array / a primitive. Only adopt it
+      // when it's a real object — otherwise the `.mcpServers` write below (which
+      // is OUTSIDE this try) dereferences null → uncaught TypeError that aborts
+      // init mid-run, or mutates an array into a malformed .mcp.json. Bad/missing
+      // → keep the fresh { mcpServers: {} } default.
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        mcpConfig = parsed as Record<string, unknown>;
+      }
+    } catch { /* malformed JSON — keep the fresh default */ }
+  }
+  if (
+    !mcpConfig.mcpServers ||
+    typeof mcpConfig.mcpServers !== "object" ||
+    Array.isArray(mcpConfig.mcpServers)
+  ) {
+    mcpConfig.mcpServers = {};
   }
   // Use forward slashes for Node.js compatibility
   const indexPath = join(mcpServerDir, "dist", "index.js").replace(/\\/g, "/");
@@ -237,7 +251,7 @@ Team11 Memory initialized!
   Database:    .team11/memory.db
   MCP Server:  .team11/mcp-server/
   Config:      .team11/config.json
-  Tools:       16 MCP tools registered
+  Tools:       28 MCP tools registered
 
   Restart Claude Code to activate the memory server.
 
@@ -366,27 +380,4 @@ function copyLiveSource(mcpServerDir: string): void {
     ["node_modules", "dist", ".git"],
   );
   console.log("  Copied " + copied + " source files");
-}
-
-// Retained for backward compatibility — delegates to the live-source copy.
-// The stale embedded snapshot below is unreachable and kept only as a diff
-// reference (regenerated from the CURRENT src/ tree by generate-cli.cjs); it
-// is no longer used by init().
-function writeSourceFiles(mcpServerDir: string) {
-  copyLiveSource(mcpServerDir);
-  return;
-
-  // eslint-disable-next-line no-unreachable
-  const files: Array<{ path: string; content: string }> = [];
-
-/* __EMBEDDED_SOURCE_FILES__ */
-
-  // Write all files
-  for (const file of files) {
-    const fullPath = join(mcpServerDir, file.path);
-    mkdirSync(join(fullPath, ".."), { recursive: true });
-    writeFileSync(fullPath, file.content);
-  }
-
-  console.log("  Wrote " + files.length + " source files");
 }

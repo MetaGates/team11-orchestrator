@@ -29,7 +29,11 @@ export function registerHealthTools(
               (SELECT COUNT(*) FROM pheromones) as pheromones,
               (SELECT COUNT(*) FROM contradictions) as contradictions,
               (SELECT COUNT(*) FROM file_summaries) as summaries,
-              (SELECT COUNT(*) FROM findings WHERE superseded_by = -1) as archived
+              -- archived = decay-archived (-1) PLUS consolidate merge-losers
+              -- (positive keeper id). The old superseded_by = -1 predicate
+              -- undercounted merge-losers. Matches the active predicate every
+              -- retrieval tool uses.
+              (SELECT COUNT(*) FROM findings WHERE superseded_by IS NOT NULL AND superseded_by != 0) as archived
           `).get() as Record<string, number>;
         } catch {
           return null;

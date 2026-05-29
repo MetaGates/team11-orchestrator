@@ -411,6 +411,15 @@ function planDedupeForType(
 ): { plan: DedupePlanItem[]; comparisons: number } {
   const eligible = rows.filter((r) => r.has_embedding === 1);
   const n = eligible.length;
+  // PERF: O(n^2) per type — each pair is a SQL round-trip running two correlated
+  // subqueries (re-fetching both BLOBs from embedding_cache every call). For the
+  // few-hundred-findings-per-type scale this runs at today it is fine, and dedupe
+  // runs rarely (sleep-time maintenance, not request path). If a type ever grows
+  // to thousands, the safe optimization is to preload each eligible finding's
+  // BLOB once into a Map<id, Float32Array> and compute cosine in-process —
+  // BUT it must reproduce sqlite-vec's vec_distance_cosine exactly (same
+  // normalization/float semantics) or dedup decisions would drift, so do not
+  // hand-roll cosine without a parity test against vec_distance_cosine first.
   const cosStmt = db.prepare(
     `SELECT (1.0 - vec_distance_cosine(
         (SELECT embedding FROM embedding_cache WHERE finding_id = ?),
@@ -469,15 +478,29 @@ function planDedupeForType(
   for (const members of clusters.values()) {
     if (members.length < 2) continue; // singletons are not duplicates
     const keeper = pickKeeper(members);
-    const superseded = members
-      .filter((m) => m.id !== keeper.id)
-      .map((m) => ({
+
+    // Cosine similarity is NOT transitive: union-find can chain A~B~C into one
+    // cluster even when sim(A,C) < threshold. Superseding C under keeper A would
+    // then drop a finding that is NOT actually a near-duplicate of the survivor.
+    // Guard: only supersede a member whose DIRECT similarity to the keeper is
+    // >= threshold. Transitively-linked-but-dissimilar members stay active and
+    // will re-cluster on a later pass once a closer keeper exists.
+    const superseded: DedupePlanItem["superseded"] = [];
+    for (const m of members) {
+      if (m.id === keeper.id) continue;
+      comparisons++;
+      const res = cosStmt.get(keeper.id, m.id) as { sim: number | null } | undefined;
+      const direct = res && typeof res.sim === "number" ? res.sim : null;
+      if (direct === null || direct < threshold) continue; // not a direct dup of the keeper
+      superseded.push({
         id: m.id,
         title: m.title,
         created_at: m.created_at,
         last_reinforced: m.last_reinforced,
-        similarity: Math.round((bestSim.get(m.id) ?? 0) * 10000) / 10000,
-      }));
+        similarity: Math.round(direct * 10000) / 10000,
+      });
+    }
+    if (superseded.length === 0) continue; // keeper had no direct duplicates
     plan.push({
       type: keeper.type,
       keeper: {
@@ -502,13 +525,26 @@ interface CliArgs {
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = { execute: false, simThreshold: DEFAULT_SIM_THRESHOLD };
+
+  // Consume the value following a value-taking flag, rejecting a missing value or
+  // one that is itself a flag. Without this, `--type --execute` silently sets
+  // type="--execute" (and drops --execute), so the run filters on a bogus type
+  // AND fails to enter execute mode — a dangerous quiet no-op.
+  const takeValue = (i: number, flag: string): string => {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith("--")) {
+      throw new Error(`${flag} requires a value; got ${v === undefined ? "end of args" : JSON.stringify(v)}`);
+    }
+    return v;
+  };
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--execute") args.execute = true;
     else if (a === "--json") {
       /* default output is already JSON; flag accepted for parity */
     } else if (a === "--sim-threshold") {
-      const raw = argv[++i];
+      const raw = takeValue(i++, a);
       const v = Number(raw);
       if (!Number.isFinite(v) || v <= 0 || v > 1) {
         throw new Error(
@@ -516,10 +552,12 @@ function parseArgs(argv: string[]): CliArgs {
         );
       }
       args.simThreshold = v;
-    } else if (a === "--type") args.type = argv[++i];
-    else if (a === "--project") args.projectRoot = argv[++i];
+    } else if (a === "--type") args.type = takeValue(i++, a);
+    else if (a === "--project") args.projectRoot = takeValue(i++, a);
     else if (a.startsWith("--")) {
       throw new Error(`Unknown flag: ${a}`);
+    } else {
+      throw new Error(`Unexpected positional argument: ${JSON.stringify(a)}`);
     }
   }
   return args;
