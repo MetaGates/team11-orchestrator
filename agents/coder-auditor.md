@@ -58,6 +58,7 @@ Log the question in your pair log. The CEO will surface it to the human.
 - **Match existing patterns exactly.** If the codebase uses `snake_case`, you use `snake_case`. If it uses a specific error handling pattern, you use that pattern.
 - **Read before write.** Always read the current state of a file before editing it. Never edit based on assumptions.
 - **Grep before read.** Find the right files first. Don't guess file paths.
+- **Code-intelligence routing (structural questions — who-imports / who-calls / dependency / impact):** use **ripgrep** (always fresh, accurate) or **LSP** (`lsp_find_references` / `lsp_goto_definition`) if available. Do NOT use graphify / a precomputed code graph for structural facts — validated unreliable on this project (~7% import accuracy, edges reversed; 2026-05-29). Semantic/judgment → read + reason; broad read-only parallel → Workflow (`protocols/workflow-fanout.md`).
 - **Batch tool calls.** Make independent reads/greps in parallel, not sequentially.
 - **Don't over-engineer.** Solve the problem that was asked, not hypothetical future problems.
 - **Don't under-engineer.** If the task requires touching 5 files to be complete, touch all 5. Don't leave half the work undone.
@@ -360,9 +361,7 @@ Don't ask when:
 
 ### When You Are the AUDITOR
 
-**AUDITOR IS READ-ONLY (behavioral — enforce yourself).** When your role this round is auditor, you do NOT edit, write, or mutate source files, and you do NOT run mutating Bash (no migrations, installs, git add/commit, codegen, `rm`/`mv`/redirect-into-tracked-files). Auditing is read + analyze + write-to-findings ONLY. Your write surface is limited to: your findings file (`.team11/findings/{PAIR_ID}-round-{N}.md`), your pair log, your checkpoint file, and outbox entries. The single exception is a **trivial** fix explicitly permitted below (typo / missing import / obvious one-liner) — and even then you log it and your partner audits YOUR fix next round (role swap). Anything non-trivial is a finding, not an edit.
-
-> Harness note: this is a **behavioral** constraint, not enforced frontmatter. `team11-coder-auditor` is a *single rotating subagent* (it both codes and audits), so a stub-level `disallowedTools` would also disable the coder. Hard enforcement would require splitting the auditor into its own read-only registered subagent (`.claude/agents/team11-auditor.md` with `tools: [Read, Glob, Grep, WebFetch, WebSearch, ToolSearch, Write]`, Write scoped by prose to findings/logs) or a PreToolUse hook gating Edit/Write/mutating-Bash when role=auditor.
+**AUDITOR IS READ-ONLY — you enforce this yourself.** When your role this round is auditor, you do NOT edit, write, or mutate source files, and you do NOT run mutating Bash (no migrations, installs, git add/commit, codegen, `rm`/`mv`/redirect-into-tracked-files). Auditing is read + analyze + write-to-findings ONLY. Your write surface is limited to: your findings file (`.team11/findings/{PAIR_ID}-round-{N}.md`), your pair log, your checkpoint file, and outbox entries. The single exception is a **trivial** fix explicitly permitted below (typo / missing import / obvious one-liner) — and even then you log it and your partner audits YOUR fix next round (role swap). Anything non-trivial is a finding, not an edit.
 
 1. **Read the hive mind** to understand the full picture — what your partner changed AND what other pairs are doing that might interact.
 
@@ -488,6 +487,9 @@ Don't ask when:
    - Does this change conflict with what another pair is doing?
    - Does it modify a file that another pair depends on?
 
+   **Tool-routing:**
+   - Did the coder answer structural questions (who-calls / who-imports / dependency / impact) with **ripgrep / LSP** — rather than flailing with repeat-greps or trusting a precomputed code graph (graphify is deprecated on this project)?
+
 5. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/{PAIR_ID}-round-{N}.md`:
    ```markdown
    # {PAIR_ID} — Round {N} Audit Findings
@@ -510,6 +512,9 @@ Don't ask when:
    **Impact:** [what breaks if this isn't fixed — trace the scenario]
    **Suggested Fix:** [exact code or approach to fix it]
    **Can I Fix This Directly?** [yes — trivial | no — needs discussion]
+   **Recommended Action:** [what you recommend the human do — never blank] · **Confidence:** [high|med|low]
+   **Escalation Type:** [confidence | permission | conflict | capability]
+   **Alternatives Rejected:** [option → why rejected; or "none"]
    **Verdict:** PENDING
 
    ## What's Good

@@ -82,7 +82,7 @@ Break request into tasks. Each task gets:
 
 Tasks assigned to the same pair run sequentially within the pair. Tasks across different pairs run in parallel.
 
-**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). Full how-to: `protocols/workflow-fanout.md`.
+**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). **Routing ladder:** narrow lookup → **grep**; repeated structural code question → **graphify** (kept fresh); broad read-only agent work → **Workflow**; writes → **pair loop**. Workflow saves **time + main-context, NOT tokens** — never use it for narrow lookups or to "save tokens." Full how-to: `protocols/workflow-fanout.md`.
 
 **Inject pheromone gotchas into each pair's dispatch prompt.** The `get_pheromones` response from Step 1 includes gotchas per file. When decomposing, attach the relevant gotchas to each subtask's CONTEXT field in the dispatch template — this prevents pairs from rediscovering known traps (e.g., "CSP blocks inline styles", "psycopg3 not psycopg2", "port 3001 not 3000"). Gotchas that apply project-wide are already in `.team11/project-prompt.md` / `knowledge/gotchas.md`; pheromone gotchas are the file-specific layer on top.
 
@@ -128,11 +128,12 @@ Add `.team11/` to `.gitignore` if not present.
 
 ## Step 4: Dispatch Pairs (Sequential Init, Parallel Execution)
 
-**Pre-check:** Verify worktrees exist. If not, tell user to run `/team11 setup` first (see `protocols/worktrees.md`).
+**Pre-check:** Verify worktrees exist (run `/team11 setup` if not). Also verify `.team11/project-prompt.md` exists — it's REQUIRED in every dispatch (below); if missing, surface "PROJECT PROMPT MISSING — run `/team11 project-prompt init`" and create it before dispatching.
 
 ```bash
 PROJECT_NAME=$(basename "$PWD")
 ls "../${PROJECT_NAME}-pair-1" > /dev/null 2>&1 || echo "ERROR: Run /team11 setup first"
+ls .team11/project-prompt.md > /dev/null 2>&1 || echo "WARN: .team11/project-prompt.md MISSING — run /team11 project-prompt init"
 ```
 
 Pairs deploy one at a time so each reads an accurate hive mind before starting.
@@ -186,7 +187,7 @@ RELEVANT KNOWLEDGE TOPICS:
 [paste contents of the relevant .team11/knowledge/<topic>.md files — CEO selects which topics match the task scope; do NOT paste all topics]
 
 CLAUDE.MD CONSTRAINTS:
-[paste any relevant constraints from the project's CLAUDE.md]
+[Do NOT paste CLAUDE.md wholesale — agents already receive it via auto-injection. Paste ONLY task-scope-specific constraints or off-limits items the agent must not miss for THIS task.]
 
 RESEARCH DOCS:
 [if the task touches a domain with an R-XX.YY.md decision, reference it — paste the decision summary, not the whole file]

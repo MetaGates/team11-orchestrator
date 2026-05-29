@@ -661,6 +661,20 @@ Structured multi-choice questions:
 - **Always include a `Let me explain` option** unless the gate is truly binary (e.g., merge yes/no).
 - **Multi-part gates (e.g., multiple findings to review):** prefer ONE `AskUserQuestion` with a "review each finding" option over N sequential questions.
 
+### Required context packet (every escalation carries this)
+
+A gate must NEVER be a bare "what should I do?" — that causes escalation fatigue and bad human decisions. Every escalation to the human carries:
+- **What completed** — what the pair did / finished before pausing
+- **The decision** — the specific thing needing approval
+- **Recommended action + confidence** — your recommendation (high|med|low), never a blank ask
+- **Escalation type** — `confidence` | `permission` | `conflict` | `capability`
+- **Alternatives rejected** — options considered → why rejected (or "none")
+- **Affected files / other pairs** — cross-pair context the human needs
+- **Task progress** — where this sits in the overall task
+- **Evidence** — `file:line` + the concrete proof behind the recommendation (per `workflow-fanout.md` invariant #4: the gate gets evidence, not just a conclusion)
+
+Batch 3-4 low-priority escalations into ONE gate rather than interrupting serially.
+
 ### When NOT to use `AskUserQuestion`
 
 - **Completion reports** — the CEO reports what happened; no decision needed.
