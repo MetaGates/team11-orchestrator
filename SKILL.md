@@ -230,7 +230,9 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 
 A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts, gotchas, pheromones, contradictions, releases) into the memory DB and re-renders `hive.md`. Full agent prompt: `agents/secretary.md`.
 
-**Carrier — CEO-driven (manual).** The `SubagentStop` hook does NOT fire for background subagents (anthropics/claude-code #25147, closed "not planned"), and the CEO backgrounds every pair — so an event-hook carrier is not viable. The working carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`, run by the CEO between dispatches: it reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` entries since the last processed marker (idempotent), writes them to the memory DB **with embeddings**, and re-renders the hive. The old "Mode B" poll-loop subagent (a `sleep 30` watch loop) fought the harness and is retired. This matches Team11's "manual-only, no hooks" principle.
+**Carrier — CEO-driven by default; event-driven now possible (pilot).** The verified-working carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`, run by the CEO between dispatches: it reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers since the last processed mark (idempotent), writes them to the memory DB **with embeddings**, and re-renders the hive.
+
+On CC ≥2.1.145 an **event-driven** carrier is now plausible — a `SubagentStop` hook firing `process-pair-log.js` per pair completion. This was previously thought impossible (#25147 "background agents bypass Stop hooks", closed not-planned), but #33049 + #58637 (both COMPLETED) made Agent-tool subagents — including background ones — reach the Stop hook and fixed the zombie-loop foot-gun. Before trusting it: **empirically confirm** the hook fires for a *background* pair on your CC version, and guard the ≥6-concurrent-pair foot-gun (`CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`). Until verified in-environment, CEO-driven is the default. The old "Mode B" poll-loop subagent is retired regardless.
 
 ## Permanent Worktrees
 
@@ -426,7 +428,11 @@ Cross-cutting rules that apply across all steps and are always loaded here in ma
 
 The CEO reads model assignments from `.team11/config.json → model_routing`. Each role has a designated model; the CEO passes the right `model` parameter to the `Agent` tool on dispatch. **Never hardcode a model in SKILL.md — always read from config.**
 
-Routing is **by friendly name only** (`opus` | `sonnet` | `haiku`). The `model` parameter resolves to the *current* version of that family at dispatch time. **Version pinning (e.g. `claude-opus-4-6`) is NOT expressible** at dispatch, and **per-dispatch reasoning `effort` (low|medium|high|max) is NOT expressible either** — the Agent/Task tool exposes only `model` / `max_turns` / `prompt` / `subagent_type` (tracked: anthropics/claude-code #25669, #43083). Treat both as **aspirational**; do not document them as live knobs. All roles route to current **Opus** on this project.
+The Agent/Task tool's `model` parameter is **friendly-name only** (`opus` | `sonnet` | `haiku`) and resolves to the *current* version of that family at dispatch. Two finer controls exist but sit OUTSIDE that tool param (verified 2026-05-29 against CC 2.1.156 + dated issue states):
+- **Version pinning** (e.g. `claude-opus-4-8`) IS expressible — via the registered subagent-stub frontmatter `model:` field or the `CLAUDE_CODE_SUBAGENT_MODEL` env var (resolution order: `CLAUDE_CODE_SUBAGENT_MODEL` > per-invocation > stub frontmatter > main). The *alias* request (#34821) was closed not-planned, but full IDs ship. **Low value here** given the all-Opus policy — useful only for version reproducibility.
+- **Per-dispatch reasoning `effort`** shipped as subagent config (#25669 COMPLETED) but is a **no-op on the in-session Agent-tool spawn Team11 uses** (#43083 OPEN, reproduced ≥2.1.146); it only takes effect via the `claude agents --effort` / `claude -p --agent` CLI path. Treat effort as not-yet-usable for in-session pairs; revisit when #43083 closes.
+
+All roles route to current **Opus** on this project.
 
 | Role | Model |
 |------|-------|
