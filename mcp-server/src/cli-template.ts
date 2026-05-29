@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from "fs";
-import { join, resolve } from "path";
-import { execSync } from "child_process";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync, statSync } from "fs";
+import { join, resolve, dirname } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+import { execSync, execFileSync } from "child_process";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const command = process.argv[2];
 
@@ -64,9 +67,15 @@ function init() {
     mkdirSync(dir, { recursive: true });
   }
 
-  // Step 2: Write all source files
-  console.log("Writing MCP server source files...");
-  writeSourceFiles(mcpServerDir);
+  // Step 2: Copy the live MCP server source into the target project.
+  // Previously this embedded a hand-maintained snapshot of every source file
+  // (writeSourceFiles), which drifted out of sync with db.ts and shipped a
+  // born-broken schema (missing contradictions/active_edits/operators/
+  // file_summaries tables). Copying the live source tree guarantees the
+  // canonical, current schema (D3 fix). The DB itself is created from the
+  // canonical initDb in Step 9b below.
+  console.log("Copying MCP server source files...");
+  copyLiveSource(mcpServerDir);
 
   // Step 3: Write package.json
   writeFileSync(join(mcpServerDir, "package.json"), JSON.stringify({
@@ -130,6 +139,29 @@ function init() {
   } catch (_err) {
     console.error("Build failed. You may need to run it manually:");
     console.error(`  cd ${mcpServerDir} && npm run build`);
+  }
+
+  // Step 6b: Initialize the database from the CANONICAL schema (D3 fix).
+  // Run the freshly-built dist/db.js::initDb in a separate node process so the
+  // full, current schema (findings, pheromones, contradictions, active_edits,
+  // operators, file_summaries, FTS5 + vec0) is created up front — not lazily
+  // from a possibly-stale snapshot. execFileSync (no shell) keeps the
+  // server-controlled paths from being shell-interpreted.
+  console.log("Initializing database (canonical schema)...");
+  try {
+    const dbJsUrl = pathToFileURL(join(mcpServerDir, "dist", "db.js")).href;
+    const dbPath = join(team11Dir, "memory.db").replace(/\\/g, "/");
+    const initScript =
+      `import(${JSON.stringify(dbJsUrl)}).then(m => { ` +
+      `const db = m.initDb(${JSON.stringify(dbPath)}); ` +
+      `const t = db.prepare("SELECT COUNT(*) as c FROM sqlite_master WHERE type='table'").get(); ` +
+      `console.log('  Database ready (' + t.c + ' tables)'); db.close(); });`;
+    execFileSync(process.execPath, ["--input-type=module", "-e", initScript], {
+      cwd: mcpServerDir,
+      stdio: "inherit",
+    });
+  } catch (_err) {
+    console.error("Database init deferred — it will be created on first MCP server start.");
   }
 
   // Step 7: Create .mcp.json (merge if exists)
@@ -281,9 +313,70 @@ function runDecay() {
 }
 
 // -----------------------------------------------------------------------
-// writeSourceFiles -- embeds ALL TypeScript source files as JSON strings
+// copyLiveSource -- copy the live MCP server source tree into a target
+// project (replaces the old writeSourceFiles, which embedded a hand-
+// maintained snapshot of every source file that drifted out of sync with
+// db.ts and shipped a born-broken schema — D3 fix). The DB is created from
+// the canonical initDb (see Step 9b in init()), so the schema is always
+// current regardless of this copy.
 // -----------------------------------------------------------------------
+
+/** Walk up from this module to the MCP server package root (has package.json + src/). */
+function findLiveSourceRoot(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 6; i++) {
+    if (existsSync(join(dir, "package.json")) && existsSync(join(dir, "src"))) return dir;
+    dir = resolve(dir, "..");
+  }
+  throw new Error("Could not locate live MCP server source root (no package.json + src/ found)");
+}
+
+/** Recursively copy a directory, excluding build artifacts. Returns file count. */
+function copyDirRecursive(src: string, dest: string, exclude: string[] = []): number {
+  let count = 0;
+  mkdirSync(dest, { recursive: true });
+  for (const entry of readdirSync(src)) {
+    if (exclude.includes(entry)) continue;
+    const srcPath = join(src, entry);
+    const destPath = join(dest, entry);
+    if (statSync(srcPath).isDirectory()) {
+      count += copyDirRecursive(srcPath, destPath, exclude);
+    } else {
+      copyFileSync(srcPath, destPath);
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Copy the live `src/` tree from this package into the target project's
+ * mcp-server directory. No-op (with a notice) when init runs inside the same
+ * package that hosts the source, to avoid copying a directory onto itself.
+ */
+function copyLiveSource(mcpServerDir: string): void {
+  const liveRoot = findLiveSourceRoot();
+  if (resolve(liveRoot) === resolve(mcpServerDir)) {
+    console.log("  MCP server source already in place (same package) — skipping copy.");
+    return;
+  }
+  const copied = copyDirRecursive(
+    join(liveRoot, "src"),
+    join(mcpServerDir, "src"),
+    ["node_modules", "dist", ".git"],
+  );
+  console.log("  Copied " + copied + " source files");
+}
+
+// Retained for backward compatibility — delegates to the live-source copy.
+// The stale embedded snapshot below is unreachable and kept only as a diff
+// reference (regenerated from the CURRENT src/ tree by generate-cli.cjs); it
+// is no longer used by init().
 function writeSourceFiles(mcpServerDir: string) {
+  copyLiveSource(mcpServerDir);
+  return;
+
+  // eslint-disable-next-line no-unreachable
   const files: Array<{ path: string; content: string }> = [];
 
 /* __EMBEDDED_SOURCE_FILES__ */
