@@ -1,0 +1,18 @@
+# Team11 memory MCP server — ignore build output, deps, and per-project runtime state
+node_modules/
+dist/
+*.tsbuildinfo
+
+# per-project runtime state (lives in <project>/.team11/, not here — guard anyway)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+_secretary_state.json
+_secretary.lock/
+*.lock
+logs/
+
+# editing backups
+*.orig-*
+*.bak-*
