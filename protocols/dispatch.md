@@ -82,6 +82,8 @@ Break request into tasks. Each task gets:
 
 Tasks assigned to the same pair run sequentially within the pair. Tasks across different pairs run in parallel.
 
+**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). Full how-to: `protocols/workflow-fanout.md`.
+
 **Inject pheromone gotchas into each pair's dispatch prompt.** The `get_pheromones` response from Step 1 includes gotchas per file. When decomposing, attach the relevant gotchas to each subtask's CONTEXT field in the dispatch template — this prevents pairs from rediscovering known traps (e.g., "CSP blocks inline styles", "psycopg3 not psycopg2", "port 3001 not 3000"). Gotchas that apply project-wide are already in `.team11/project-prompt.md` / `knowledge/gotchas.md`; pheromone gotchas are the file-specific layer on top.
 
 ## Step 3: Initialize State

@@ -428,6 +428,22 @@ Cross-cutting rules that apply across all steps and are always loaded here in ma
 - **Background Execution Rules** (below): what surfaces to the user, what doesn't
 - **Permissions** (below): auto-approved vs must-ask operations
 
+## Workflow-Backed Fan-Out
+
+For **read-only, schema-shaped, embarrassingly-parallel** phases (audits, research sweeps, multi-file analysis, scoring, list-curation-style scatter), the CEO delegates the fan-out to the native **`Workflow` tool** instead of hand-rolling parallel `Agent` dispatches — then feeds the validated results into the Team11 **gated pair loop** for any writes.
+
+**Why (benchmarked 2026-05-29 — [[project-workflow-vs-team11-spike]]):** at *equal agent count* the native Workflow was **~31% faster and ~38% cheaper** with **identical output quality**. It gives schema-enforced output (auto-retried), an automatic synthesis agent, deterministic aggregation, `runId` + `/workflows` observability, and `resumeFromRunId` replay — hands-off. Team11's per-agent overhead (the long coder-auditor prompt + pair-log/checkpoint/outbox/memory ceremony) buys *governance*, not better output.
+
+**Decision rule (per phase, not per task):**
+
+| Phase | Use |
+|-------|-----|
+| Read-only scatter→gather (audit / research / analyze / score), **no writes** | **`Workflow` tool** |
+| Writes / human approval / role rotation / durable artifacts / cross-run memory | **Team11 gated pair loop** |
+| Hybrid (most real tasks) | **Workflow fan-out → validated results → human gate → pair loop for the writes** |
+
+**Hard invariant:** a Workflow has **no human gate and no memory** — it NEVER lands writes. The Workflow is the *engine*; the gated pair loop is the *governed process* that owns every write ([[feedback_review_before_changes]]). Full how-to (invoking the tool, schema design, feeding results to the gate, the repeatability caveats): **`protocols/workflow-fanout.md`**.
+
 ## Model Routing
 
 The CEO reads model assignments from `.team11/config.json → model_routing`. Each role has a designated model; the CEO passes the right `model` parameter to the `Agent` tool on dispatch. **Never hardcode a model in SKILL.md — always read from config.**
