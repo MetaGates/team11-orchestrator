@@ -4,12 +4,22 @@ Persistent memory for Team11 multi-agent orchestration. Stores findings, decisio
 
 ## Quick Start
 
+**One command (recommended)** — installs, builds, then `bootstrap.js` fixes whatever else is missing (DB init, `config.json`, `pheromones.json`, `hive.md`, `.gitignore`, `.mcp.json`). Safe to re-run:
+
+```bash
+cd .team11/mcp-server && npm install && npm run build && node dist/scripts/bootstrap.js
+```
+
+**Or step by step:**
+
 ```bash
 cd .team11/mcp-server
 npm install
 npm run build
 npm run seed    # Import existing .team11/findings/*.md into the database
 ```
+
+**Brand-new project?** `node dist/scripts/init-project.js [project-root]` scaffolds `.team11/`, copies the server in, installs + builds, initializes the DB, and wires `.gitignore` + `.mcp.json` in one shot.
 
 The MCP server auto-discovers via `.mcp.json` in the project root. Restart Claude Code after setup.
 
@@ -81,8 +91,8 @@ With memory: `recall_context()` returns ~8K tokens of curated, relevant knowledg
 ### Confidence Decay
 | Tool | Description |
 |------|-------------|
-| `run_decay` | Run 5% weekly confidence decay. Flags stale (<50%), archives very stale (<25%). Also runs summary GC. |
-| `reinforce_finding` | Reset a finding's decay timer (agent re-confirmed it's still true). |
+| `run_decay` | Run confidence decay (5% weekly **after a 14-day grace period**). Flags stale (≤50%), archives very stale (≤25%). Also runs summary GC. |
+| `reinforce_finding` | Re-confirm a finding: **+20% confidence (capped at 1.0)** and reset the decay clock. |
 | `restore_finding` | Un-archive a finding, reset confidence to 1.0. |
 | `list_stale` | List findings below a confidence threshold. |
 
@@ -162,42 +172,54 @@ This means searching "character panel" finds `CharacterPanel`.
 - **Cache:** SHA-256 content hash prevents re-embedding unchanged content
 - **Graceful fallback:** If model fails to load, FTS5-only search still works
 
-## Confidence Decay
+## Confidence Decay (v2)
 
-Knowledge decays over time unless reinforced:
+Knowledge decays over time unless reinforced. **v2 (2026-04-22)** adds a **14-day grace period** and makes **access count as reinforcement**. Constants live in `src/decay.ts` (`GRACE_PERIOD_DAYS=14`, `DECAY_RATE=0.05`, `REINFORCE_BUMP=0.2`, `STALE_THRESHOLD=0.5`, `ARCHIVE_THRESHOLD=0.25`):
 
 ```
-Confidence = (1 - 0.05) ^ weeks_since_reinforced
+Within 14 days of last_reinforced:  no decay at all (grace period)
+After grace:  Confidence = (1 - 0.05) ^ weeks_since_grace_ended
 
-Week 0:   100%  — fresh
-Week 4:   81%   — still good
-Week 14:  49%   — FLAGGED as stale (<50%)
-Week 28:  24%   — ARCHIVED (<25%)
+Day 0–14:   100%  — fresh (grace)
+~Week 6:    ~81%  — still good
+~Week 16:   ~49%  — FLAGGED as stale (≤50%)
+~Week 30:   ~24%  — ARCHIVED (≤25%, superseded_by = -1)
 ```
 
-Agents reinforce facts by logging `[OUTBOX:REINFORCED]` in their pair logs. The Secretary calls `reinforce_finding` to reset the timer.
+Reinforcement is two-pronged:
+- **Explicit:** agents log `[REINFORCED]` (or `[OUTBOX:REINFORCED]`) in their pair logs; the Secretary calls `reinforce_finding`, which **adds +20% confidence (capped at 1.0)** and resets the decay clock.
+- **Implicit:** every `recall_context` / `search_memory` / `get_detail` that returns an entry bumps its `last_reinforced` — routine access keeps live knowledge fresh with no marker needed.
 
-`run_decay` is called at `/team11 standdown` to update all scores.
+`run_decay` (called at `/team11 standdown`) recomputes all scores, flags entries ≤50%, archives entries ≤25%, and runs summary-cache GC. Archival is reversible via `restore_finding`.
 
-## Secretary Agent & Outbox Protocol
+## Secretary Carrier & Outbox Protocol
 
-Agents write structured `[OUTBOX:*]` entries in their pair logs. After each agent completes, the CEO dispatches a Secretary agent that:
+Agents write structured `[OUTBOX:*]` markers (plus the `[FACT]` / `[GOTCHA]` / `[REINFORCED]` / `[CONTRADICTION]` line prefixes and `QUESTION FOR HUMAN`) in their pair logs. The **carrier** that drains those markers into the DB is `dist/scripts/process-pair-log.js` — a one-shot, idempotent processor (NOT a poll/sleep loop). It:
 
-1. Reads the pair log for new `[OUTBOX:*]` entries
-2. Builds a JSON outbox file
-3. Runs `write-and-sync.js` — ensures all tables exist (`initDb`), inserts entries, triggers Turso sync
-4. Updates `pheromones.json` and `verdicts.json`
-5. Renders `hive.md` from DB state
+1. Scans the pair logs for **new** markers since the last run
+2. Writes each entry to the DB via the existing primitives (`initDb`, `storeEmbedding`) — so findings get vector embeddings
+3. Triggers Turso sync, updates `pheromones.json` / `verdicts.json`, and re-renders `hive.md`
 
 ```bash
-# The Secretary calls this script (not raw SQL):
-node dist/scripts/write-and-sync.js .team11/_outbox.json
+# Process all pair logs (default):
+node dist/scripts/process-pair-log.js
+
+# Useful flags:
+node dist/scripts/process-pair-log.js --pair 3        # only logs/pair-3.md
+node dist/scripts/process-pair-log.js --dry-run       # parse + report, no writes
+node dist/scripts/process-pair-log.js --all-history   # force full re-ingest of a log
 ```
 
-This ensures:
-- Tables always exist (even on a fresh clone)
-- Turso sync is triggered after every write
-- Coworkers see changes within 60s
+**Idempotency & safety:**
+- A per-log **high-water mark** in `.team11/_secretary_state.json` means re-running only processes lines added since last time. (Keep this file — deleting it makes the next `--all-history` re-ingest every log.)
+- A **single-flight lock** at `.team11/_secretary.lock` makes concurrent firings (several pairs finishing at once) safe.
+- **Live-log detection by mtime:** a freshly-modified log (within `BACKLOG_MTIME_WINDOW_MS`, default 48h) is ingested in full automatically, while an old historical log with no prior mark is baseline-skipped — so `--all-history` is now an explicit override, not a routine requirement.
+
+**Trigger models (correct under both):**
+- **Event-driven** — a `SubagentStop` hook (matcher `team11-coder-auditor`) in `.claude/settings.local.json` runs the carrier on every pair completion.
+- **CEO-driven** — the CEO runs it manually between dispatches (the fallback; also handy with `--pair` / `--dry-run`).
+
+The older `write-and-sync.js` does the same DB write + embedding, but consumes a **pre-built `_outbox.json`** rather than scanning the pair logs itself — `process-pair-log.js` (which scans logs for new markers) is the current carrier.
 
 ## Summarization Cache
 
@@ -363,7 +385,11 @@ embedding_cache — SHA-256 dedup cache for embeddings
   │   │   ├── health.ts         — health_check (DB stats, sync, embeddings)
   │   │   └── sync.ts           — sync_status, force_sync
   │   └── scripts/
-  │       ├── seed.ts            — Import existing findings into DB
-  │       └── write-and-sync.ts  — Secretary agent DB writer (initDb + Turso sync)
+  │       ├── seed.ts              — Import existing findings into DB
+  │       ├── process-pair-log.ts  — Secretary carrier: drain [OUTBOX:*] → DB (current)
+  │       ├── write-and-sync.ts    — Legacy writer: consumes a pre-built _outbox.json
+  │       ├── consolidate-memory.ts — Sleep-time maintenance: dedupe + GC (--execute)
+  │       ├── bootstrap.ts         — One-command setup inside an existing mcp-server/
+  │       └── init-project.ts      — Scaffold Team11 MCP into a brand-new project
   └── dist/                     — Compiled JS output
 ```
