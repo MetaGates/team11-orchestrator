@@ -276,78 +276,10 @@ Team11 auto-discovers available MCP servers per project. Currently configured:
 | **GitHub** | global | PR management, issues, repo operations |
 | **Context7** | global | Documentation lookup for frameworks/libraries |
 | **team11-memory** | per-project | Persistent SQLite memory — `recall_context`, `store_finding`, `store_pheromone`, `get_pheromones`, 28 tools total |
-| **graphify** | per-project | Knowledge graph MCP — query graph nodes, community structure, god nodes, shortest paths |
 | **PostgreSQL** | per-project | Database schema inspection, query execution |
 | **Redis** | per-project | Cache inspection, session data, pub/sub |
 
 Agents use MCP tools when they provide richer data than built-in tools. For example: Postgres MCP for schema introspection instead of raw SQL, GitHub MCP for PR reviews instead of `gh` CLI.
-
----
-
-## graphify Integration
-
-graphify turns your codebase into a queryable knowledge graph. Team11 uses it in two ways:
-
-1. **CEO context enrichment** — before dispatching, CEO reads `graphify-out/GRAPH_REPORT.md` to identify god nodes (highest-connectivity abstractions) and community structure. This replaces broad file scanning for architecture questions.
-2. **MCP server** — the graphify server (`python -m graphify.serve graphify-out/graph.json`) exposes graph queries as MCP tools. Agents can ask "what depends on X?" without reading 40 files.
-
-### Setup
-
-```bash
-# 1. Install graphify (Python 3.12+, per-project venv)
-uv venv .venv --python 3.12
-uv pip install graphifyy
-
-# 2. Register with Claude Code
-PYTHONUTF8=1 .venv/Scripts/python.exe -m graphify install        # installs skill
-PYTHONUTF8=1 .venv/Scripts/python.exe -m graphify claude install  # CLAUDE.md hook + PreToolUse
-
-# 3. Build the initial graph (run from project root)
-/graphify                # scans . → graphify-out/graph.json + graph.html + GRAPH_REPORT.md
-
-# 4. Add to .mcp.json
-```
-
-```json
-{
-  "mcpServers": {
-    "team11-memory": {
-      "command": "node",
-      "args": [".team11/mcp-server/dist/index.js"],
-      "env": { "TEAM11_MEMORY_DB": "C:/team11-data/<project>/memory.db" }
-    },
-    "graphify": {
-      "command": ".venv/Scripts/python.exe",
-      "args": ["-m", "graphify.serve", "graphify-out/graph.json"],
-      "env": { "PYTHONUTF8": "1" }
-    }
-  }
-}
-```
-
-```bash
-# 5. Enable in Claude Code settings
-# Add "graphify" and "team11-memory" to enabledMcpjsonServers in .claude/settings.local.json
-# Restart Claude Code
-```
-
-### What graphify produces
-
-| Output | Path | What it's for |
-|--------|------|--------------|
-| Knowledge graph | `graphify-out/graph.json` | MCP server source, agent queries |
-| Interactive viz | `graphify-out/graph.html` | Human exploration |
-| Report | `graphify-out/GRAPH_REPORT.md` | God nodes, communities, surprising connections — read before architecture work |
-| Wiki | `graphify-out/wiki/` | Per-node pages (when generated) |
-
-### Keeping the graph current
-
-The `graphify claude install` step registers a **PreToolUse hook** that prompts Claude Code to rebuild the graph after code changes. For manual rebuilds:
-
-```bash
-/graphify --update    # incremental — re-extracts only changed files (fast)
-/graphify             # full rebuild (slower, needed after large refactors)
-```
 
 ---
 
