@@ -4,6 +4,16 @@ Setup, reset, teardown, and Windows-specific safety rules for permanent worktree
 
 Loaded by the CEO on `/team11 setup`, `/team11 reset pair <N>`, `/team11 reset all`, `/team11 teardown`.
 
+## Worktree Hygiene — MANDATORY (added 2026-06-02)
+
+Violating these is what produced **100+ orphaned `.claude/worktrees/agent-*` worktrees** that had to be force-removed in one cleanup pass. They are non-negotiable.
+
+1. **The permanent pool is the ONLY worktree mechanism Team11 uses.** Dispatch every coder-auditor / researcher to work IN `../<project>-pair-N` (the WORKTREE PATH in the dispatch prompt). The agent `cd`s there.
+2. **NEVER pass `isolation: "worktree"`** to the `Agent` tool for a pair/researcher. It spawns a throwaway harness worktree (`.claude/worktrees/agent-<hash>`, lock reason `claude agent (pid …)`) that is NOT auto-cleaned when dirty — it accumulates and becomes stale-locked. The pool already provides isolation.
+3. **Close out on completion (NON-NEGOTIABLE).** After merge (dispatch Step 6), every pair worktree returns to its `team11-pair-N` branch synced to `main`. A pair worktree must NEVER be left parked on a task branch.
+4. **Sweep strays at standdown.** At `/team11 standdown` and `/team11 stop`, if any `.claude/worktrees/agent-*` exist they are orphans — remove them with `git worktree remove -f -f` (overrides stale `claude agent` locks; the branch + commits ALWAYS survive removal — only the working-copy folder goes). Then `git worktree prune`.
+5. **Non-destructive close-out when a pool worktree has untracked scratch:** prefer `git switch -C team11-pair-N main` (keeps untracked files, preserves the source branch) over `reset --hard` + `clean -fd`, unless you have verified the dirt is disposable. The user may be anxious about losing uncommitted work — verify before discarding.
+
 ## Permanent Worktrees
 
 Team11 uses **permanent, pre-created worktrees** — created once via `/team11 setup`, reused forever. No create/destroy per task.

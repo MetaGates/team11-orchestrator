@@ -82,7 +82,7 @@ Break request into tasks. Each task gets:
 
 Tasks assigned to the same pair run sequentially within the pair. Tasks across different pairs run in parallel.
 
-**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). **Routing ladder:** narrow lookup → **grep**; repeated structural code question → **graphify** (kept fresh); broad read-only agent work → **Workflow**; writes → **pair loop**. Workflow saves **time + main-context, NOT tokens** — never use it for narrow lookups or to "save tokens." Full how-to: `protocols/workflow-fanout.md`.
+**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). **Routing ladder:** narrow lookup → **grep**; structural code question (who-calls / who-imports / impact) → **ripgrep / LSP**; broad read-only agent work → **Workflow**; writes → **pair loop**. Workflow saves **time + main-context, NOT tokens** — never use it for narrow lookups or to "save tokens." Full how-to: `protocols/workflow-fanout.md`.
 
 **Inject pheromone gotchas into each pair's dispatch prompt.** The `get_pheromones` response from Step 1 includes gotchas per file. When decomposing, attach the relevant gotchas to each subtask's CONTEXT field in the dispatch template — this prevents pairs from rediscovering known traps (e.g., "CSP blocks inline styles", "psycopg3 not psycopg2", "port 3001 not 3000"). Gotchas that apply project-wide are already in `.team11/project-prompt.md` / `knowledge/gotchas.md`; pheromone gotchas are the file-specific layer on top.
 
@@ -165,7 +165,7 @@ Each pair is launched using the `Agent` tool with:
 - `subagent_type: "team11-coder-auditor"` — the registered subagent stub at `.claude/agents/team11-coder-auditor.md` delegates to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`. The CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it.
 - `run_in_background: true`
 - `model` from `config.model_routing[role]` (see Model Routing in main SKILL.md)
-- **No `isolation: "worktree"` needed** — agents work directly in their permanent worktree directory
+- **NEVER pass `isolation: "worktree"`** — it spawns an uncleaned throwaway worktree that accumulates (see **Worktree Hygiene** in `protocols/worktrees.md`). Agents work directly in their permanent **pool** worktree directory.
 
 For research-only tasks (web searches, doc reads, no code changes), use `subagent_type: "team11-researcher"` instead. For Secretary dispatch (Mode B), use `subagent_type: "team11-secretary"`.
 
