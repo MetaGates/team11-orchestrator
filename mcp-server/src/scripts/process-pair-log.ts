@@ -102,8 +102,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 //   - mtime within the window  => LIVE  => process from line 0 (like --all-history)
 //   - mtime older than window  => stale => baseline-skip (just set the mark)
 // This removes the carrier's one fragile dependency: the SubagentStop hook no
-// longer needs --all-history, and deleting _secretary_state.json no longer
-// re-ingests every old log — only logs touched within the window come back.
+// longer needs --all-history, and deleting _secretary_state.json re-ingests
+// nothing: a log that carries a [SECRETARY:PROCESSED] marker RESUMES right
+// after its last marker (see processLog — re-reading from line 0 would
+// duplicate pheromones/contradictions, which have no UNIQUE guard), and an
+// UNMARKED log is mtime-gated — only those touched within the window come back.
 //
 // Default 48h. Tunable at runtime via TEAM11_BACKLOG_WINDOW_HOURS (a positive
 // finite number of hours); anything missing/invalid falls back to the default.
@@ -737,7 +740,11 @@ async function processLog(
 
   const allLines = readFileSync(logPath, "utf8").split(/\r?\n/);
   const total = allLines.length;
-  const hasMarker = allLines.some((l) => l.includes(PROCESSED_MARKER));
+  let lastMarkerIdx = -1;
+  allLines.forEach((l, i) => {
+    if (l.includes(PROCESSED_MARKER)) lastMarkerIdx = i;
+  });
+  const hasMarker = lastMarkerIdx !== -1;
   // --all-history on an EXPLICIT single target (--log / --pair) also overrides
   // a marker-less prior high-water mark. Such a mark means the log was
   // baseline-SKIPPED, never read: an actual ingest always appends a PROCESSED
@@ -748,8 +755,20 @@ async function processLog(
   // narrow meaning (a prior mark is honoured) so it can never mass-re-ingest
   // the May-2026 baselined backlog.
   const markedButNeverIngested = (state[rel]?.lines ?? 0) > 0 && !hasMarker;
-  const prior =
+  let prior =
     opts.allHistory && opts.explicitTarget && markedButNeverIngested ? 0 : (state[rel]?.lines ?? 0);
+  // No high-water mark (state file lost/deleted) but the log carries PROCESSED
+  // markers: resume right AFTER the last marker. Re-reading from line 0 would
+  // duplicate every pheromone/contradiction already stored (only facts/gotchas
+  // dedupe on UNIQUE(title, source_file)) — the header comment used to claim
+  // the mtime window prevented this, but marked logs bypass that guard by
+  // design. --all-history (any mode) still means "from line 0" here: that is
+  // the operator explicitly asking for a full re-read.
+  let resumedFromMarker = false;
+  if (prior === 0 && hasMarker && !opts.allHistory) {
+    prior = lastMarkerIdx + 1;
+    resumedFromMarker = true;
+  }
 
   // First-run backlog guard: a log we've never processed AND that has no
   // PROCESSED marker is AMBIGUOUS — it is either a freshly-created LIVE pair log
@@ -795,7 +814,14 @@ async function processLog(
   const fromLine = prior;
   const slice = allLines.slice(fromLine);
   if (slice.length === 0) {
-    return { log: rel, linesScanned: 0, fromLine, processed: true, reason: "up-to-date", results };
+    return {
+      log: rel,
+      linesScanned: 0,
+      fromLine,
+      processed: true,
+      reason: resumedFromMarker ? "up-to-date (resumed after last marker; no state entry)" : "up-to-date",
+      results,
+    };
   }
 
   const { parsed, parseErrors } = parseLines(slice, rel, sourcePair);

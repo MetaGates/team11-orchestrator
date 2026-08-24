@@ -6,13 +6,16 @@
  * step was being skipped under load (last hand-written line 2026-08-10); a
  * script cannot forget.
  *
- * Usage:
+ * Usage (also `--help`):
  *   node dist/scripts/hotl-eval.js --pair <id> --round <n> --findings <path>
  *        [--worktree <path>] [--base <ref>] [--preverif pass|fail]
  *        [--decision <HUMAN_DECISION>] [--note <text>] [--backfill]
  *        [--project <root>]
  *   node dist/scripts/hotl-eval.js --update-decision --pair <id> --round <n>
  *        --decision <HUMAN_DECISION> [--note <text>] [--project <root>]
+ *   --base defaults to main, then origin/main; a repo without either (the skill
+ *   repo) needs `--base master`. A findings file with a "## Round <n>" section
+ *   is evaluated on that section's Summary only (multi-round files).
  *
  * Fail-closed rules (would_auto_merge=false with a reason):
  *   - findings file has no `## Summary` block with a `Critical: N | Major: N`
@@ -51,7 +54,23 @@ interface Args {
   updateDecision: boolean;
 }
 
+const USAGE = `hotl-eval — HOTL gate step 3b (Team11)
+  node dist/scripts/hotl-eval.js --pair <id> --round <n> --findings <path>
+       [--worktree <path>] [--base <ref>] [--preverif pass|fail]
+       [--decision <HUMAN_DECISION>] [--note <text>] [--backfill] [--project <root>]
+  node dist/scripts/hotl-eval.js --update-decision --pair <id> --round <n> --decision <X> [--note <text>]
+  --base <ref>   diff base for --worktree; defaults to main, then origin/main. Repos without a
+                 main branch (e.g. the skill repo) need it explicitly: --base master
+  --round <n>    with a "## Round <n>" section in the findings file, only that section's
+                 Summary is evaluated; otherwise the first Summary in the file
+  --preverif     what the pair log proves for ruff/lint; omitted → fails closed (preverif-unknown)
+  Verdict JSON on stdout; the shadow line is appended to hotl_gate.shadow_log from .team11/config.json.`;
+
 function parseArgs(argv: string[]): Args {
+  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
+    console.log(USAGE);
+    process.exit(0);
+  }
   const args: Args = { backfill: false, updateDecision: false };
   const value = (flag: string, i: number): string => {
     const v = argv[i];
@@ -150,6 +169,7 @@ interface FindingsParse {
   major: number | null;
   major_security: number | null;
   summary_line?: string;
+  summary_source?: string; // "round-N-section" | "first-summary" | "…fallback-anywhere"
 }
 
 const SUMMARY_HEADING_RE = /^#{2,4}\s*Summary\b/i;
@@ -161,25 +181,63 @@ const CATEGORY_RE = /^\*\*Category:\*\*\s*(.*)$/i;
  * `### Summary` / `## Summary — Round 2`; `- Critical: 0 | Major: 1 | Minor: 2`
  * with `|` or `·` separators, optional `| Nit: N` / `| Info: N` tails, a bold
  * wrapper, and a parenthetical after the number (`Major: 1 (CONFIRMED, …)`).
- * Primary: the line within 15 lines under the Summary heading. Fallback: the
+ * Primary: the line within 15 lines under a Summary heading — EVERY heading
+ * matching `Summary\b` is tried in order (a "## Summary of scenarios" above the
+ * real "## Summary" must not shadow it; audit round 1, minor 5). Fallback: the
  * first line ANYWHERE carrying both counts (6 of 716 files put it under a
  * "Verdict" section instead). Neither present → fail closed.
  */
-function parseFindings(path: string): FindingsParse {
-  const lines = readFileSync(path, "utf8").split(/\r?\n/);
-  const h = lines.findIndex((l) => SUMMARY_HEADING_RE.test(l));
-  const window = h === -1 ? lines : lines.slice(h + 1, h + 16);
+function parseFindings(path: string, round: number): FindingsParse {
+  const all = readFileSync(path, "utf8").split(/\r?\n/);
   const hasCounts = (l: string): boolean => {
     const p = l.replace(/\*\*/g, "");
     return /Critical:\s*\d+/i.test(p) && /(?<![A-Za-z])Major:\s*\d+/i.test(p);
   };
-  const summaryLine = window.find(hasCounts);
+
+  // Multi-round files: when a "## Round N" (or "## Audit round N") heading
+  // exists for the requested round, evaluate ONLY that section (up to the next
+  // heading of the same or higher level) — a file whose round-1 Summary says
+  // "Major: 3" and whose round-2 section says "Major: 0" must be judged on
+  // round 2 when --round 2 is passed. No such heading → whole file, first
+  // Summary wins (the previous behaviour). Reported in `summary_source`.
+  const roundRe = new RegExp(`^(#{1,4})\\s+(?:audit\\s+)?round\\s+${round}\\b`, "i");
+  let scope = all;
+  let source = "first-summary";
+  const roundIdx = all.findIndex((l) => roundRe.test(l));
+  if (roundIdx !== -1) {
+    const level = (roundRe.exec(all[roundIdx]) as RegExpExecArray)[1].length;
+    let end = all.length;
+    for (let i = roundIdx + 1; i < all.length; i++) {
+      const m = /^(#{1,6})\s/.exec(all[i]);
+      if (m && m[1].length <= level) {
+        end = i;
+        break;
+      }
+    }
+    scope = all.slice(roundIdx + 1, end);
+    source = `round-${round}-section`;
+  }
+
+  const headings: number[] = [];
+  scope.forEach((l, i) => {
+    if (SUMMARY_HEADING_RE.test(l)) headings.push(i);
+  });
+  let summaryLine: string | undefined;
+  for (const h of headings) {
+    summaryLine = scope.slice(h + 1, h + 16).find(hasCounts);
+    if (summaryLine) break;
+  }
   if (!summaryLine) {
+    summaryLine = scope.find(hasCounts);
+    if (summaryLine) source = `${source === "first-summary" ? "" : source + "/"}fallback-anywhere`;
+  }
+  if (!summaryLine) {
+    const where = roundIdx !== -1 ? `inside the 'Round ${round}' section` : "anywhere";
     const reason =
-      h === -1
-        ? "unparseable-findings: no '## Summary' heading and no 'Critical: N | Major: N' line anywhere"
-        : "unparseable-findings: no 'Critical: N | Major: N' line within 15 lines under Summary";
-    return { ok: false, reason, critical: null, major: null, major_security: null };
+      headings.length === 0
+        ? `unparseable-findings: no '## Summary' heading and no 'Critical: N | Major: N' line ${where}`
+        : `unparseable-findings: no 'Critical: N | Major: N' line within 15 lines under any of ${headings.length} Summary heading(s) ${where}, nor elsewhere in it`;
+    return { ok: false, reason, critical: null, major: null, major_security: null, summary_source: source };
   }
   const plain = summaryLine.replace(/\*\*/g, "");
   const crit = /Critical:\s*(\d+)/i.exec(plain) as RegExpExecArray;
@@ -188,7 +246,7 @@ function parseFindings(path: string): FindingsParse {
   // major_security: MAJOR finding blocks whose **Category:** mentions security.
   let majorSecurity = 0;
   let inMajor = false;
-  for (const l of lines) {
+  for (const l of scope) {
     if (/^###\s/.test(l)) inMajor = MAJOR_HEADER_RE.test(l);
     else if (inMajor) {
       const m = CATEGORY_RE.exec(l);
@@ -204,7 +262,8 @@ function parseFindings(path: string): FindingsParse {
     critical: Number(crit[1]),
     major: Number(maj[1]),
     major_security: majorSecurity,
-    summary_line: `${h === -1 ? "[fallback-anywhere] " : ""}${plain.trim()}`,
+    summary_line: `[${source}] ${plain.trim()}`,
+    summary_source: source,
   };
 }
 
@@ -235,7 +294,15 @@ function diffStats(worktree: string | undefined, baseArg: string | undefined): D
   if (!worktree) return { ok: false, reason: "diff-unavailable: no --worktree", base: null, files: [], lines: null };
   if (!existsSync(worktree)) return { ok: false, reason: `diff-unavailable: worktree not found ${worktree}`, base: null, files: [], lines: null };
   const base = baseArg ?? (refExists(worktree, "main") ? "main" : refExists(worktree, "origin/main") ? "origin/main" : null);
-  if (!base) return { ok: false, reason: "diff-unavailable: neither main nor origin/main resolves", base: null, files: [], lines: null };
+  if (!base) {
+    return {
+      ok: false,
+      reason: `diff-unavailable: neither main nor origin/main resolves in ${worktree} — pass --base <ref> (e.g. --base master for the skill repo)`,
+      base: null,
+      files: [],
+      lines: null,
+    };
+  }
   let out: string;
   try {
     out = git(worktree, ["diff", "--numstat", `${base}...HEAD`]);
@@ -318,7 +385,7 @@ interface ShadowLine {
 function evaluate(args: Args, cfg: HotlConfig): { line: ShadowLine; detail: Record<string, unknown> } {
   const c = cfg.criteria;
   const findingsPath = resolve(args.findings as string);
-  const fp = parseFindings(findingsPath);
+  const fp = parseFindings(findingsPath, args.round as number);
   const ds = diffStats(args.worktree, args.base);
   const risk = ds.ok ? riskFilesTouched(ds.files, c.risk_files_always_gate) : [];
   const blocked: string[] = [];
@@ -366,6 +433,7 @@ function evaluate(args: Args, cfg: HotlConfig): { line: ShadowLine; detail: Reco
     detail: {
       findings_file: findingsPath,
       summary_line: fp.summary_line ?? null,
+      summary_source: fp.summary_source ?? null,
       diff_base: ds.base,
       diff_files: ds.files,
       gate_enabled: cfg.enabled,
@@ -375,19 +443,33 @@ function evaluate(args: Args, cfg: HotlConfig): { line: ShadowLine; detail: Reco
 
 // --- shadow log I/O --------------------------------------------------------
 
+/**
+ * The shadow log is a hand-edited operator record whose existing lines are
+ * CRLF (123 of 125 on 2026-08-24). Emit whatever EOL dominates the file so a
+ * script-appended line never makes it mixed-EOL (audit round 1, minor 3).
+ */
+function dominantEol(text: string): "\r\n" | "\n" {
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const bareLf = (text.match(/(?<!\r)\n/g) ?? []).length;
+  return crlf >= bareLf && crlf > 0 ? "\r\n" : "\n";
+}
+
 function appendLine(shadowPath: string, line: ShadowLine): void {
   let prefix = "";
+  let eol: "\r\n" | "\n" = "\n";
   if (existsSync(shadowPath)) {
     const cur = readFileSync(shadowPath, "utf8");
-    if (cur.length > 0 && !cur.endsWith("\n")) prefix = "\n";
+    eol = dominantEol(cur);
+    if (cur.length > 0 && !cur.endsWith("\n")) prefix = eol;
   }
-  appendFileSync(shadowPath, `${prefix}${JSON.stringify(line)}\n`);
+  appendFileSync(shadowPath, `${prefix}${JSON.stringify(line)}${eol}`);
 }
 
 function updateDecision(shadowPath: string, args: Args): ShadowLine {
   if (!existsSync(shadowPath)) throw Object.assign(new Error(`no shadow log at ${shadowPath}`), { exitCode: 3 });
   const raw = readFileSync(shadowPath, "utf8");
-  const lines = raw.split("\n");
+  const eol = dominantEol(raw);
+  const lines = raw.split(/\r?\n/); // re-joined with the dominant EOL below (uniform, never mixed)
   let idx = -1;
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].trim()) continue;
@@ -408,7 +490,7 @@ function updateDecision(shadowPath: string, args: Args): ShadowLine {
   if (args.note) o.note = args.note;
   lines[idx] = JSON.stringify(o);
   const tmp = `${shadowPath}.tmp-${process.pid}`;
-  writeFileSync(tmp, lines.join("\n"));
+  writeFileSync(tmp, lines.join(eol));
   renameSync(tmp, shadowPath);
   return o;
 }
