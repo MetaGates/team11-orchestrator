@@ -5,7 +5,7 @@ This is the full operating protocol for `/team11 <task>` — Steps 0-6, checkpoi
 Loaded by the CEO on every task dispatch. Not loaded for meta-commands (`/team11 status`, `/team11 hive`, `/team11 findings`, etc.).
 
 Cross-references to main SKILL:
-- Model Routing config drives the `model` parameter in every Agent tool call
+- Model Routing: `.team11/config.json → model_routing` is a record of intent; on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides the Agent-tool `model` param, agent frontmatter `model`, and the main model, so every dispatch runs on Fable 5 whatever the config says (verified 2026-08-24, CC 2.1.241). Check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before assuming a routing change took effect.
 - HOTL Gate evaluation runs as step 3b in the Pair Loop (between pre-verification and human gate)
 - Human Gate Protocol specifies use of `AskUserQuestion` for every human decision point
 
@@ -57,7 +57,7 @@ Read the user's request. Determine how many pairs to dispatch:
 
 **Do not over-dispatch.** 1 pair is often enough. Only use more when work is genuinely parallel and independent.
 
-**Pheromone-informed estimation (PROCEDURAL — not optional):** Before deciding pair count and task assignments, the CEO MUST call the `mcp__team11-memory__get_pheromones` MCP tool with the list of files in scope for the user's request. This returns difficulty ratings, gotchas, and duration estimates from past pair work on those files.
+**Pheromone-informed estimation (PROCEDURAL — not optional):** Before deciding pair count and task assignments, the CEO MUST call the `mcp__team11-memory__get_pheromones` MCP tool with the list of files in scope for the user's request. Its schema is deferred in this build: load it first with `ToolSearch(query="select:mcp__team11-memory__get_pheromones", max_results=1)` (batch any other team11-memory tools you will need into the same call), then invoke it. This returns difficulty ratings, gotchas, and duration estimates from past pair work on those files.
 
 ```
 get_pheromones(files=["src/scoring/engine.py", "src/scoring/list_generator.py"], limit=10)
@@ -82,7 +82,7 @@ Break request into tasks. Each task gets:
 
 Tasks assigned to the same pair run sequentially within the pair. Tasks across different pairs run in parallel.
 
-**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow NEVER lands writes (no human gate, no memory). **Routing ladder:** narrow lookup → **grep**; structural code question (who-calls / who-imports / impact) → **ripgrep / LSP**; broad read-only agent work → **Workflow**; writes → **pair loop**. Workflow saves **time + main-context, NOT tokens** — never use it for narrow lookups or to "save tokens." Full how-to: `protocols/workflow-fanout.md`.
+**Per phase, pick the engine.** For a **read-only, schema-shaped, parallel** sub-phase (audit / research sweep / multi-file analysis / scoring scatter), delegate the fan-out to the native **`Workflow` tool** rather than hand-rolling parallel pair dispatches — at equal scale it is faster + cheaper, schema-validated (auto-retried), auto-synthesized, and resumable. Then feed the validated results into the gated pair loop for any **writes**. A Workflow must NEVER be used to land writes (no human gate, no memory) — but its subagents run under `acceptEdits`, so they are NOT read-only by construction: state "read-only, do not edit files" explicitly in every Workflow agent prompt. Only the main conversation (the CEO) can launch a Workflow — never a pair subagent — and it caps at 16 concurrent agents (verified 2026-08-24, CC 2.1.241). **Routing ladder:** narrow lookup → **grep**; structural code question (who-calls / who-imports / impact) → **ripgrep (the `Grep` tool; the former OMC `lsp_*` tools were removed 2026-08-24)**; broad read-only agent work → **Workflow**; writes → **pair loop**. Workflow saves **time + main-context, NOT tokens** — never use it for narrow lookups or to "save tokens." Full how-to: `protocols/workflow-fanout.md`.
 
 **Inject pheromone gotchas into each pair's dispatch prompt.** The `get_pheromones` response from Step 1 includes gotchas per file. When decomposing, attach the relevant gotchas to each subtask's CONTEXT field in the dispatch template — this prevents pairs from rediscovering known traps (e.g., "CSP blocks inline styles", "psycopg3 not psycopg2", "port 3001 not 3000"). Gotchas that apply project-wide are already in `.team11/project-prompt.md` / `knowledge/gotchas.md`; pheromone gotchas are the file-specific layer on top.
 
@@ -93,7 +93,7 @@ If `.team11/` doesn't exist, create it:
 mkdir -p .team11/logs .team11/findings .team11/checkpoints .team11/stale
 ```
 
-Initialize `.team11/hive.md` with:
+Initialize `.team11/hive.md` ONLY if it does not exist, as CEO narrative plus an empty carrier block:
 ```markdown
 # Hive Mind
 **Project:** [project name]
@@ -101,30 +101,19 @@ Initialize `.team11/hive.md` with:
 **Type:** hive-mind
 **Version:** 1
 
-## Active Edits
-| Pair | Agent | File | Action | Interfaces Affected | Status | Timestamp |
-|------|-------|------|--------|---------------------|--------|-----------|
+## CEO narrative
+[assignments, file claims, decisions, cross-lane contracts — free-form, CEO-written, above the markers]
 
-## Discovered Facts
-| ID | Fact | Source | Confidence | Last Reinforced | Timestamp | Supersedes |
-|----|------|--------|------------|-----------------|-----------|------------|
-
-## Decisions
-| ID | Decision | Rationale | Decided By | Timestamp | Supersedes |
-|----|----------|-----------|------------|-----------|------------|
-
-## Contradictions
-| ID | Claim A | Source A | Claim B | Source B | Resolution | Status |
-|----|---------|----------|---------|----------|------------|--------|
-
-## Pheromone Trails
-| Date | Pair | Task | Difficulty | Files Touched | Gotchas | Duration |
-|------|------|------|------------|---------------|---------|----------|
+<!-- CARRIER-AUTO:START -->
+<!-- rendered by the carrier script (process-pair-log.js); never hand-edit between these markers -->
+<!-- CARRIER-AUTO:END -->
 ```
 
 Add `.team11/` to `.gitignore` if not present.
 
-**Version field:** The CEO increments the Version number on every hive.md update. This allows pairs to detect stale reads and supports the connected mode sync protocol.
+**Never rewrite an existing hive.md from a template** — append to the narrative above the CARRIER-AUTO block. The live file is CEO narrative + the carrier auto-block (Discovered Facts / Gotchas / Pheromone Trails rendered from the memory DB), not the five-table layout an earlier revision of this step initialized (verified 2026-08-24).
+
+**Version field:** the carrier owns it — it stamps the auto-block version and mirrors it into the header `**Version:**` line on every render. The CEO does not hand-increment it.
 
 ## Step 4: Dispatch Pairs (Sequential Init, Parallel Execution)
 
@@ -155,7 +144,7 @@ For each pair N:
   1. Reset worktree to latest main:
      cd ../food-aggro-pair-N && git fetch origin main && git reset --hard origin/main && git clean -fd
   2. The pair works directly on its permanent branch (team11-pair-N)
-  3. Update hive mind with Pair N's assignment + background task ID
+  3. Update hive mind with Pair N's assignment + the agent id returned by the Agent tool (this id is what `TaskStop`, `SendMessage` and `ListAgents` address — `/tasks` lists running background agents; do not call `TaskList`/`TaskGet`, hidden on Fable 5)
   4. Deploy Pair N agent (background)
      → "Pair N deployed. Pair N+1 standing by..."
   5. Next pair (sees Pair N in hive mind)
@@ -163,22 +152,22 @@ For each pair N:
 
 Each pair is launched using the `Agent` tool with:
 - `subagent_type: "team11-coder-auditor"` — the registered subagent stub at `.claude/agents/team11-coder-auditor.md` delegates to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`. The CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it.
-- `run_in_background: true`
-- `model` from `config.model_routing[role]` (see Model Routing in main SKILL.md)
+- Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant in this build (verified 2026-08-24, CC 2.1.241) and may leave the schema. Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by the agent id the Agent tool returns (`ListAgents`).
+- `model` from `config.model_routing[role]` is a record of intent only (see Model Routing in main SKILL.md): on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides any `model` param or frontmatter value, so every pair runs on Fable 5 (which is also what the config records). To change routing, change/unset the env var — editing config.json alone does nothing.
 - **NEVER pass `isolation: "worktree"`** — it spawns an uncleaned throwaway worktree that accumulates (see **Worktree Hygiene** in `protocols/worktrees.md`). Agents work directly in their permanent **pool** worktree directory.
 
-For research-only tasks (web searches, doc reads, no code changes), use `subagent_type: "team11-researcher"` instead. For Secretary dispatch (Mode B), use `subagent_type: "team11-secretary"`.
+For research-only tasks (web searches, doc reads, no code changes), use `subagent_type: "team11-researcher"` instead. There is no Secretary agent to dispatch: the Secretary is the carrier script (`process-pair-log.js`), which the SubagentStop hook runs automatically after each subagent completes and which maintains the CARRIER-AUTO block in hive.md. Do not spawn a `team11-secretary` subagent (the stub exists only for a manual one-shot pass if the hook is disabled).
 
 ### Dispatch Template
 
 Passed as the `prompt` parameter to the `Agent` tool. The subagent stub handles loading the full agent prompt from the skill file.
 
-**Ordering rule (for prompt caching):** static content FIRST, dynamic content LAST. Claude Code's automatic prefix caching reuses the longest shared prefix across sequential dispatches in a session. A dispatch that puts the 1000+ line project prompt + knowledge topics BEFORE the per-task HIVE MIND / TASK fields gets ~90% discount on that prefix after the first dispatch. Reversing this ordering (dynamic first) gives you 0% cache hit.
+**Ordering rule (for prompt caching):** static content FIRST, dynamic content LAST. Claude Code's automatic prefix caching reuses the longest shared prefix across sequential dispatches — but (verified 2026-08-24, CC 2.1.241) subagents use the **5-minute** cache TTL even on a subscription, and the cache is keyed by **model + effort + cwd** (a dispatch spawned from a different cwd — another worktree or session — is a different prefix). A dispatch that puts the 1000+ line project prompt + knowledge topics BEFORE the per-task HIVE MIND / TASK fields can get ~90% discount on that prefix — ONLY when the next dispatch shares the same model, effort and cwd AND lands within 5 minutes of the previous one. Pairs launched minutes apart, or with a different effort, pay full price for the prefix; keep the sequential-launch loop tight to benefit. Reversing this ordering (dynamic first) gives you 0% cache hit either way.
 
 Follow this order exactly:
 
 ```
-=== STATIC PREFIX (cacheable across all dispatches) ===
+=== STATIC PREFIX (cacheable across dispatches that share model/effort/cwd within the 5-minute TTL) ===
 
 PROJECT PROMPT INDEX:
 [paste contents of .team11/project-prompt.md — REQUIRED, always present]
@@ -202,7 +191,7 @@ dispatching. The following are FORBIDDEN in the TASK field:
 Every dispatch must include: exact file paths, what to change, why, and what
 "done" looks like. If you can't write this, you haven't understood the task yet.
 
-=== SEMI-STATIC (cacheable within a session) ===
+=== SEMI-STATIC (cacheable only while dispatches stay within the 5-minute TTL on the same model/effort/cwd) ===
 
 MODE: [solo|connected]
 OPERATOR: [operator name + prefix, e.g. "CyberStein (cs)" — omit in solo mode]
@@ -213,7 +202,7 @@ AVAILABLE MCPs: [list discovered MCP tools]
 
 PAIR: [N]
 PAIR_ID: [pair-N in solo, {prefix}-pair-N in connected, e.g. cs-pair-1]
-AGENT: [agent id for this dispatch — freeform, e.g. a/b or 1/2]
+AGENT: [Team11 role label for this dispatch — freeform, e.g. a/b or 1/2. NOT the runtime agent id: that is returned by the Agent tool and is what `SendMessage`/`TaskStop`/`ListAgents` address; look it up with `ListAgents`]
 ROLE THIS ROUND: [coder|auditor]
 WORKTREE PATH: [absolute path to permanent worktree, e.g. C:\Users\...\food-aggro-pair-1]
 PARTNER: [the other agent's context — what they're doing]
@@ -415,7 +404,7 @@ Rejected: ...
 Confidence: high
 Scope-risk: narrow
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
 COMMIT
 )"
 
@@ -440,10 +429,7 @@ rm -f <project-root>/.team11/checkpoints/pair-N-checkpoint.json
 
 **Pheromone trail write:** After successful merge, the CEO writes a pheromone trail entry:
 
-1. **Append to hive.md Pheromone Trails table:**
-   ```
-   | 2026-04-01 | Pair 2 | Mobile HUD fixes | HIGH | 15 files | CSP blocks inline styles; must use class-based styling | 45min |
-   ```
+1. **Store the trail where Step 1 reads it:** call `mcp__team11-memory__store_pheromone` (load its schema via ToolSearch first). There is no Pheromone Trails table in the live hive.md — the carrier renders recent trails from the DB inside the CARRIER-AUTO block; do not create one. Add a one-line note to the hive.md CEO narrative if the trail matters for the next dispatch.
 
 2. **Write extended data to `.team11/pheromones.json`:**
    ```json
@@ -466,7 +452,7 @@ rm -f <project-root>/.team11/checkpoints/pair-N-checkpoint.json
    }
    ```
 
-3. **Increment hive.md Version number.**
+3. **Do not hand-increment the hive.md Version number** — the carrier stamps it on every render.
 
 **Multiple pairs finishing in sequence:**
 ```

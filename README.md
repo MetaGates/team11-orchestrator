@@ -37,10 +37,10 @@ All run in background. You keep working. They surface findings to you.
 Team11 was substantively upgraded on 2026-04-22. Key additions:
 
 - **`subagent_type` dispatch.** The CEO now passes `subagent_type: "team11-coder-auditor"` to the Agent tool instead of pasting the agent prompt inline. Registered stubs in `.claude/agents/` delegate to the canonical skill files. Same for `team11-researcher` and `team11-secretary`.
-- **Prefix-caching dispatch template.** Static content (project prompt, knowledge, CLAUDE.md) is ordered FIRST, dynamic content (hive, task, pair identity) LAST. Claude Code's automatic prefix cache reuses the static prefix across dispatches in a session — big token savings.
+- **Prefix-caching dispatch template.** Static content (project prompt, knowledge, CLAUDE.md) is ordered FIRST, dynamic content (hive, task, pair identity) LAST. Claude Code's automatic prefix cache can reuse the static prefix, but (verified 2026-08-24, CC 2.1.241) **only across dispatches that share the same cwd, model and effort, within a 5-minute window** — subagents always get the 5-minute TTL, even on a subscription. The ordering pays off for back-to-back dispatches from the same cwd (the sequential-launch loop, a round-2 re-dispatch within 5 min); do not budget on a discount across dispatches minutes apart or from different cwds.
 - **Project prompt + knowledge topics.** Every project that uses Team11 should have `.team11/project-prompt.md` (index, always loaded) + `.team11/knowledge/<topic>.md` (loaded by CEO when relevant). Contains project-specific gotchas, patterns, conventions. Stops agents from rediscovering the same traps.
 - **`AskUserQuestion` human gates.** Every human decision point (findings, merge, destructive action, swarm-debug entry, standdown, etc.) uses structured multi-choice via `AskUserQuestion`. Voice-input friendly.
-- **Role-tiered model routing.** Config-driven via `.team11/config.json → model_routing`. CEO/Coder/Auditor default to `claude-opus-4-7`; Secretary/Researcher default to `claude-opus-4-6` (mechanical / lookup work). The config controls what the CEO passes to the Agent tool — never hardcode models in SKILL.md.
+- **Model routing.** `.team11/config.json → model_routing` records the per-role model the CEO passes as the Agent tool's `model` param (currently `fable` for every role, operator directive 2026-08-21). It is NOT the top of the resolution chain (verified 2026-08-24, CC 2.1.241): `CLAUDE_CODE_SUBAGENT_MODEL` (set on this machine to `claude-fable-5`) overrides the Agent-tool param, which overrides agent-frontmatter `model`, which overrides the main model. To actually change what a subagent runs on, change (or unset) the env var first, then the config. Never hardcode models in SKILL.md.
 - **HOTL (Human-on-the-Loop) gate.** `.team11/config.json → hotl_gate` with shadow mode by default. Auto-merge criteria: 0 critical/major-security/major findings, diff-size caps, pre-verification pass, no risk-list files touched. Shadow mode logs hypothetical decisions to `.team11/findings/hotl-shadow.jsonl` for agreement analysis before promotion to `live`.
 - **Procedural pheromones.** CEO calls `mcp__team11-memory__get_pheromones` before deciding pair count (mandatory, not aspirational). Returned gotchas inline into each pair's dispatch CONTEXT.
 - **Usage-weighted decay.** Memory DB decay has a 14-day grace period; access via `recall_context` / `search_memory` bumps `last_reinforced` automatically. Explicit `reinforce_finding` bumps confidence +20% (cap 1.0). See `.team11/mcp-server/src/decay.ts`.
@@ -125,13 +125,16 @@ You can:
 
 ### 6. The Hive Mind
 
-When multiple pairs work simultaneously, they need to know what each other is doing. The hive mind (`.team11/hive.md`) is a shared file that every agent reads before editing and writes to after editing:
+When multiple pairs work simultaneously, they need to know what each other is doing. The hive mind (`.team11/hive.md`) is a shared file every agent READS before editing. Pairs never write it directly: they log `[OUTBOX:*]` claims/facts in their own `.team11/logs/pair-N.md`, and the Secretary carrier (`process-pair-log.js`, run by the SubagentStop hook after every subagent completion) re-renders the auto-block between the `CARRIER-AUTO` markers from those markers. The CEO owns the narrative above the markers (per-pair task, owned files, status):
 
 ```markdown
-| Pair | Agent | File | Action | Interfaces Affected | Status |
-|------|-------|------|--------|---------------------|--------|
-| pair-signals | a | src/api/routes/venues.py | Added GET /signals | VenueSignalSchema | coding |
-| pair-hook | a | frontend/src/hooks/useSignals.ts | New hook | VenueSignal type | coding |
+## ▶ ACTIVE — <lane>            (CEO narrative)
+- pair-signals — Added GET /signals in src/api/routes/venues.py; affects VenueSignalSchema. coding
+- pair-hook    — New hook frontend/src/hooks/useSignals.ts; affects VenueSignal type. coding
+
+<!-- CARRIER-AUTO:START -->
+… Discovered Facts / Gotchas / Pheromone Trails rendered from the memory DB — never hand-edit …
+<!-- CARRIER-AUTO:END -->
 ```
 
 If Pair 2 sees Pair 1 is changing the schema their hook depends on, they coordinate — wait for Pair 1 to finish, or work on a non-conflicting part first.
@@ -285,7 +288,7 @@ Agents use MCP tools when they provide richer data than built-in tools. For exam
 
 ## Activation
 
-**Team11 is completely inert until you invoke it.** No auto-triggers, no background daemons, no hooks, no token consumption. When not invoked, it does not exist.
+**Team11 is inert until you invoke it.** No auto-triggers, no background daemons, no token consumption. The one installed hook — a `SubagentStop` hook in the project's `.claude/settings.local.json`, no matcher — runs the Secretary carrier script (`process-pair-log.js`, ~1s, no LLM) after every subagent stop in that project; it is a no-op when no `.team11/logs/*.md` carries new markers and never fires in a project that has not installed it. (verified 2026-08-24, CC 2.1.241)
 
 To turn it off mid-task: `/team11 stop`
 
@@ -471,7 +474,7 @@ Foreground agents block your session — you can't do anything while they work. 
 
 ## Token Cost Estimates
 
-All agents run on Claude Opus 4.7 (per project policy).
+All agents currently run on Claude Fable 5 — set by `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` on this machine and mirrored in `.team11/config.json → model_routing` (operator directive 2026-08-21). Re-derive the hourly figures below when the model changes.
 
 | Scenario | Active Agents | Est. Hourly Cost |
 |----------|--------------|-----------------|
@@ -511,7 +514,7 @@ No shared-write files between pairs. Zero concurrency issues.
 | Agent crashes | `/team11 recover` reads `.team11/checkpoints/pair-N-checkpoint.json` to resume from last known phase, not from scratch |
 | Merge conflict | CEO surfaces both sides to you for resolution |
 | MCP unavailable | Agent falls back to built-in tools |
-| Human rejects | Pair restarts with your feedback via mailbox |
+| Human rejects | CEO sends the feedback to the pair's agent id via `SendMessage` (a completed subagent resumes with its transcript intact — `ListAgents` shows the id; probed 2026-08-24 on CC 2.1.241); the inbox file (`inboxes/pair-N.md`) remains the durable record. Full re-dispatch only if the agent is gone. |
 | Agent stuck 3+ attempts | Switches to competing-hypothesis debugging |
 | Graceful stop | Agents commit WIP, write partial findings, then halt |
 

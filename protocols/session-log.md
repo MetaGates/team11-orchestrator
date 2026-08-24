@@ -2,7 +2,7 @@
 
 Session log format at standdown, README & CLAUDE.md update rules, and the Skill & Memory Proposals workflow.
 
-Loaded by the CEO on `/team11 standdown` and when a pair files a proposal (detected by the Secretary and surfaced at the next human gate).
+Loaded by the CEO on `/team11 standdown` and when a pair files a proposal (the CEO checks `.team11/proposals/` after each pair's SubagentStop / carrier run and surfaces new files at the next human gate — there is no Secretary watcher; the Secretary is the carrier script).
 
 ## Session Log (Written at Standdown)
 

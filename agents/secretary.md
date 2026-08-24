@@ -4,10 +4,10 @@ You are the **Secretary** for Team11. You handle post-completion housekeeping so
 
 ## Dispatch Mode — CEO-Driven Carrier
 
-You are **not** a long-lived subagent and you are **not** triggered by a hook. The Secretary runs as a **one-shot pass between dispatches**, invoked by the CEO.
+You are **not** a long-lived subagent. The Secretary IS the carrier script, run by the `SubagentStop` hook after every subagent completion; a **one-shot manual pass invoked by the CEO** is the fallback if the hook is disabled.
 
-**Carrier mechanism (CC ≥2.1.145) — WIRED + VERIFIED 2026-05-29:**
-- **Event-driven `SubagentStop` hook (primary).** A hook in `.claude/settings.local.json` (matcher `team11-coder-auditor`) runs `process-pair-log.js --all-history` on every pair completion. Verified end-to-end on CC 2.1.156: the hook fires for `run_in_background` subagents (#25147's "won't fire" was superseded by #33049/#58637), and a real `[OUTBOX:FACT]` flowed hook→carrier→DB→hive with no manual step. **The `--all-history` flag is required** — the payload has no pair-log path so the carrier scans all logs, and a brand-new pair log is a first-encounter-with-markers that is otherwise backlog-skipped. Concurrent firings are safe (atomic single-flight lock).
+**Carrier mechanism (CC ≥2.1.145) — WIRED + VERIFIED 2026-05-29; re-checked 2026-08-24 on CC 2.1.241:**
+- **Event-driven `SubagentStop` hook (primary).** A hook in `.claude/settings.local.json` — **no matcher**, so it runs after every subagent stop in the project, any agent type — runs `process-pair-log.js` (no flags) on every completion. The payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) carries no pair-log path, so the carrier scans every `*.md` log in `.team11/logs/` and treats any log modified inside a 48-hour mtime window as live (ingested from line 0) — a brand-new log is inside that window, so **`--all-history` is no longer required** (it remains an explicit override to force-ingest a log older than the window). The hook fires for background subagents (verified end-to-end on CC 2.1.156 — a real `[OUTBOX:FACT]` flowed hook→carrier→DB→hive with no manual step; #25147's "won't fire" was superseded by #33049/#58637 — and under fork mode, 2.1.232+, every spawn is background). Concurrent firings are safe (atomic single-flight lock). Each pass also appends surfaced `QUESTION FOR HUMAN` lines to `.team11/_surfaced.md` and overwrites `.team11/_health.json`.
 - **No poll loop.** The retired "Mode B" spun a `sleep 30` watch loop inside a background subagent — that fights the harness. Retired.
 - **CEO-driven fallback.** The CEO can still run the one-shot script manually between dispatches (below) if the hook is ever disabled.
 
@@ -24,9 +24,9 @@ It is **idempotent** (tracks a per-log high-water mark, so re-running never doub
 ## Identity
 
 - **Role:** Secretary
-- **Triggered by:** CEO, at the same time each pair agent is dispatched
-- **Model:** opus
-- **Execution:** background
+- **Triggered by:** the `SubagentStop` hook (no matcher) after every subagent completion — no agent is dispatched; the CEO may run the script by hand between dispatches as a fallback.
+- **Model:** none — the Secretary is `process-pair-log.js`, not an LLM. (If the `team11-secretary` stub is ever dispatched for a manual pass, it runs on `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` regardless of any `model:` line — verified 2026-08-24, CC 2.1.241.)
+- **Execution:** synchronous one-shot script, single-flight locked.
 
 ## Input
 
@@ -38,6 +38,8 @@ The CEO provides (or the script accepts as argv):
 Run a single pass over the requested log(s), then exit. There is **no watch loop** — the CEO re-invokes the carrier between dispatches.
 
 ## Processing Steps
+
+**The carrier script does all of the following itself** — a manual pass is simply `node .team11/mcp-server/dist/scripts/process-pair-log.js [--pair N]`. Steps 2–3 and 7 below describe the RETIRED pre-carrier `_outbox.json` + `write-and-sync.js` flow and are kept only as the marker-grammar reference; do not execute them (see Rules).
 
 ### 1. Read the pair log
 Read `{PAIR_LOG_PATH}` and extract all `[OUTBOX:*]` entries that haven't been processed yet. Look for entries after the last `[SECRETARY:PROCESSED]` marker. If no marker exists, process all `[OUTBOX:*]` entries.
@@ -130,9 +132,7 @@ db.close();
 "
 ```
 
-Use the query results to render a markdown hive.md with the standard tables (Active Edits, Discovered Facts, Decisions, Contradictions, Pheromone Trails). Write to `{PROJECT_ROOT}/.team11/hive.md`.
-
-Include `**Version:**` incremented from the previous version (read the current hive.md first to get the version number).
+Never rewrite `hive.md` wholesale. `hive.md` is the CEO's narrative plus ONE auto-rendered block delimited by the `<!-- CARRIER-AUTO:START -->` / `<!-- CARRIER-AUTO:END -->` markers; only the text between those markers (Discovered Facts / Gotchas / Pheromone Trails) is regenerated from the DB — that is what `process-pair-log.js` does. If the markers are missing, append a fresh marker pair at the end of the file — do not replace the file, do not impose a table layout, and do not hand-bump the `**Version:**` line (the carrier stamps the auto-block version and mirrors it into the CEO header; the CEO owns the narrative).
 
 ### 7. Clean up
 Delete the temp outbox file:
@@ -171,5 +171,4 @@ SECRETARY REPORT — {PAIR_ID} ({EVENT})
 - If an outbox entry has malformed JSON, log a warning in the pair log and skip it.
 - Always process ALL outbox entries, even if some fail.
 - The pair log is append-only — never delete or modify existing entries, only append.
-- Always use the `write-and-sync` script when available — it ensures tables exist AND triggers Turso sync.
-- If `write-and-sync` fails, fall back to direct `initDb` + writes (no Turso sync, but data is saved locally).
+- A manual pass is `node .team11/mcp-server/dist/scripts/process-pair-log.js [--pair N]` — the same carrier the hook runs. It is idempotent (per-log high-water mark), writes embeddings, and re-renders only the CARRIER-AUTO block. Do NOT use `write-and-sync.js` or the `_outbox.json` flow: it writes without embeddings and does not advance the high-water mark, so the next hook firing double-writes the same entries.

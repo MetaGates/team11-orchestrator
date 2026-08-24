@@ -72,7 +72,7 @@ SWARM RULES:
 
 ### Convergence
 
-The CEO monitors all pair logs in real-time during swarm debugging. As findings come in:
+The CEO monitors pair logs in real time with the `Monitor` tool (e.g. a persistent `tail -f .team11/logs/pair-N.md` filtered on `[SWARM-FINDING]` — it streams stdout lines as events; CC 2.1.241) and instructs each pair to `SendMessage` `main` when it writes a root-cause finding; the SubagentStop hook fires when a pair finishes its time-box (do not poll `TaskList` — hidden on Fable 5). As findings come in:
 
 1. **CEO reads each pair's `[SWARM-FINDING]` entries** from their pair logs
 2. **CEO promotes findings to hive.md Discovered Facts** with the source pair noted
