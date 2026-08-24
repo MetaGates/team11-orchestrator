@@ -35,6 +35,31 @@
  *  F7 `.team11/proposals/` added to the allowed write segments (the protocol
  *     grants auditors proposal writes).
  *
+ * Round-3 hardening (findings pair-t11defs-round-1.md Round-2 section, approved):
+ *  F8 the interpreter-eval gate also covers the `py`/`pythonw`/`python3.x`/`pypy`
+ *     launcher aliases, and an interpreter fed by a bare `-`, a heredoc, or a
+ *     pipe (`node - <<EOF`, `python3 <<EOF`, `… | python`) — its stdin/heredoc
+ *     body gets the same write/exec-marker gate as a `-c`/`-e` payload.
+ *  F9 normalizeGit no longer enumerates git global options — it strips ALL
+ *     leading option tokens (consuming the value of value-taking ones like
+ *     -C/-c/--git-dir/--work-tree/--exec-path/--config-env/--namespace) so the
+ *     FIRST non-option token is always tested as the subcommand. WRITE_MARKERS
+ *     gains Ruby (File.write/open/delete, IO.write, FileUtils) and Perl
+ *     (open(…,'>'), unlink, syswrite) idioms; `perl`/`ruby` `-i` in-place edits
+ *     are denied like `sed -i`.
+ *
+ * DOCUMENTED LIMITS (F10 — accepted, NOT fixed; a regex PreToolUse hook cannot
+ * close these without a shell parser):
+ *   - single-line variable indirection: `X=rm; $X -rf src/x` — the guard sees
+ *     `$X` unexpanded and cannot resolve the assignment.
+ *   - a pre-written script FILE run by an interpreter (`node evil.js`,
+ *     `python evil.py`) is indistinguishable from a legitimate read-only
+ *     harness — the guard does not read the file's contents.
+ *   These require deliberate multi-step obfuscation and are OUTSIDE the threat
+ *   model (a cooperating auditor + a backstop against honest mistakes). The
+ *   audit contract, checkpoints, and commit gates are the real boundary; this
+ *   guard is a tripwire against ACCIDENTAL mutation, not a sandbox.
+ *
  * Conservative by design: when unsure, BLOCK with a clear reason — the auditor
  * can ask the CEO. False positives are acceptable; false negatives are not.
  * This file has no imports beyond node:fs and touches no DB.
@@ -121,23 +146,55 @@ function stripSafeHeredocs(cmd: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// F1: normalize git global options away so `git -C . add .`, `git -c k=v
-// commit`, `git --git-dir=X push` … hit the subcommand rules.
+// F1 + F9: normalize git global options away so `git -C . add .`,
+// `git --exec-path=/tmp add .`, `git --config-env=k=V commit` … all hit the
+// subcommand rules. Generic: after `git`, consume EVERY leading option token
+// (and the separate-arg value of a value-taking option) so the first
+// non-option token is tested as the subcommand — no per-option allowlist.
 // ---------------------------------------------------------------------------
+const GIT_VALUE_OPTS = new Set([
+  "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+  "--exec-path", "--config-env", "--attr-source", "--super-prefix",
+]);
 function normalizeGit(cmd: string): string {
-  const OPT =
-    "(?:-C\\s+(?:\"[^\"]*\"|'[^']*'|\\S+)" +
-    "|-c\\s+(?:\"[^\"]*\"|'[^']*'|\\S+)" +
-    "|--git-dir(?:=\\S+|\\s+\\S+)" +
-    "|--work-tree(?:=\\S+|\\s+\\S+)" +
-    "|--namespace(?:=\\S+|\\s+\\S+)" +
-    "|--no-pager|-P|--paginate|-p|--no-optional-locks|--literal-pathspecs|--noglob-pathspecs|--glob-pathspecs|--icase-pathspecs)";
-  const re = new RegExp("\\bgit\\s+(?:" + OPT + "\\s+)+", "g");
-  return cmd.replace(re, "git ");
+  return cmd.replace(/\bgit\s+([^\n;|&]*)/g, (_whole, rest: string) => {
+    const toks = rest.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+    let i = 0;
+    while (i < toks.length && toks[i].startsWith("-")) {
+      // A value-taking option with a SEPARATE value (no '=') also eats the next token.
+      if (GIT_VALUE_OPTS.has(toks[i]) && !toks[i].includes("=") && i + 1 < toks.length) i += 2;
+      else i += 1;
+    }
+    return "git " + toks.slice(i).join(" ");
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Interpreter heads (F3/F8) and the write/exec marker set (F3/F9). Hoisted to
+// module scope so both the stdin/heredoc pre-check and the per-segment eval
+// check share them. `py`/`pythonw`/`python3.12`/`pypy` launcher aliases are
+// covered by the regex; markers span Python/Node/PowerShell/Ruby/Perl idioms.
+// ---------------------------------------------------------------------------
+const EVAL_HEAD_RE = /^(py|pythonw?|python\d(?:\.\d+)?|pypy\d?|node|nodejs|deno|bun|perl|ruby|bash|sh|zsh|dash|ksh|pwsh|powershell)$/i;
+const EVAL_HEAD_ALT = "(?:py|pythonw?|python\\d(?:\\.\\d+)?|pypy\\d?|node|nodejs|deno|bun|perl|ruby|bash|sh|zsh|dash|ksh|pwsh|powershell)";
+const WRITE_MARKERS =
+  /open\s*\([^)]*,\s*['"][wax>]|write_text|write_bytes|writeFileSync|writeFile\s*\(|appendFile|fs\.(rm|unlink|rename|mkdir|writeFile|copyFile)|rmSync|unlinkSync|renameSync|mkdirSync|copyFileSync|child_process|execSync|spawnSync|os\.(system|popen|remove|unlink|rmdir|rename|replace|makedirs|removedirs)|subprocess|shutil|rmtree|\bunlink\b|System\.IO|\.Delete\(|\.WriteAll|File\.(write|open|delete|unlink|rename)|IO\.write|FileUtils|syswrite/i;
 
 const scan = stripSafeHeredocs(command);
 const gitScan = normalizeGit(scan);
+
+// ---------------------------------------------------------------------------
+// F8: an interpreter fed by a bare `-`, a heredoc, or a pipe delivers its
+// script through stdin — no -c/-e flag. Run the write/exec-marker gate over
+// the whole (heredoc-inclusive) command; read-only stdin scripts still pass.
+// ---------------------------------------------------------------------------
+const stdinFed =
+  new RegExp("\\b" + EVAL_HEAD_ALT + "(?:\\.exe)?\\s+(?:-\\S+\\s+)*-(?:\\s|$)", "i").test(scan) || // bare '-' arg
+  new RegExp("\\b" + EVAL_HEAD_ALT + "(?:\\.exe)?\\b[^\\n|]*<<", "i").test(scan) ||                 // interpreter with a heredoc
+  new RegExp("\\|\\s*" + EVAL_HEAD_ALT + "(?:\\.exe)?(?:\\s|$)", "i").test(scan);                   // piped into an interpreter
+if (stdinFed && WRITE_MARKERS.test(scan)) {
+  block("interpreter fed by stdin/heredoc/pipe carries write/exec markers in its script body (F8) — read-only stdin scripts pass; when in doubt the guard blocks");
+}
 
 // ---------------------------------------------------------------------------
 // 1. Flat deny rules — mutating commands, blocked outright. Run against BOTH
@@ -165,6 +222,7 @@ const DENY: Array<[RegExp, string]> = [
   [/\balembic\s+(upgrade|downgrade|revision|merge|stamp|init|edit)\b/, "alembic migration write (only current/history/heads/show/check are reads)"],
   [/(^|\s)--execute\b/, "--execute is this repo's write switch (dry-run is the default everywhere)"],
   [/\bsed(\.exe)?\s+(-\w+\s+)*-i\b/, "sed -i in-place edit"],
+  [/\b(perl|ruby)(\.exe)?\s+(-\w+\s+)*-\w*i\b/, "perl/ruby -i in-place edit (a write independent of payload markers)"],
   [/\b(Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Move-Item|Rename-Item)\b/i, "PowerShell write cmdlet"],
   [/\bwget\b/, "wget writes files (use WebFetch)"],
 ];
@@ -237,10 +295,12 @@ for (const segRaw of segments) {
   }
 
   // -------------------------------------------------------------------------
-  // F3: interpreter eval payloads — block write/exec markers, allow read-only.
+  // F3/F8: interpreter eval payloads — block write/exec markers, allow
+  // read-only. Head match is a regex so launcher aliases (py, python3.12,
+  // pypy, nodejs) are covered; the stdin/heredoc-fed shapes are caught by the
+  // module-scope F8 pre-check above.
   // -------------------------------------------------------------------------
-  const EVAL_HEADS = new Set(["python", "python3", "node", "perl", "ruby", "bash", "sh", "zsh", "dash", "pwsh", "powershell"]);
-  if (EVAL_HEADS.has(head)) {
+  if (EVAL_HEAD_RE.test(head)) {
     const fi = tokens.findIndex((t) => t === "-c" || t === "-e" || t === "--eval" || /^-Command$/i.test(t));
     if (fi !== -1) {
       const payloadStr = tokens
@@ -248,8 +308,6 @@ for (const segRaw of segments) {
         .join(" ")
         .replace(/^["']+|["']+$/g, "");
       if (!payloadStr.trim()) block(`${head} ${tokens[fi]} with no extractable payload (conservative default)`);
-      const WRITE_MARKERS =
-        /open\s*\([^)]*,\s*['"][wax]|write_text|write_bytes|writeFileSync|writeFile\s*\(|appendFile|fs\.(rm|unlink|rename|mkdir|writeFile|copyFile)|rmSync|unlinkSync|renameSync|mkdirSync|copyFileSync|child_process|execSync|spawnSync|os\.(system|popen|remove|unlink|rmdir|rename|replace|makedirs|removedirs)|subprocess|shutil|rmtree|\bunlink\b|System\.IO|\.Delete\(|\.WriteAll/i;
       if (WRITE_MARKERS.test(payloadStr)) {
         block(`${head} ${tokens[fi]} payload contains write/exec markers (read-only evals pass; when in doubt the guard blocks)`);
       }
