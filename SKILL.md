@@ -697,7 +697,7 @@ If a gate is missing from the table above but the CEO is about to block for a de
 `/team11 stop` halts all running background agents. `/team11 stop pair <N>` stops just one pair.
 
 **How to stop background agents:**
-1. Find the pair's runtime agent id with `ListAgents` (or `/tasks`) — `TaskList` is hidden on Fable 5 / Opus 4.8+ per the CC 2.1.233 release note (checklist F1; shown only with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, which is not set here); do not call it. (verified 2026-08-24, CC 2.1.241)
+1. Find the pair's runtime agent id with `ListAgents` (or `/tasks`) — `TaskList` is hidden on Opus 4.8, Sonnet 5, Fable 5, Mythos 5 and later since CC 2.1.233 (official `tools-reference.md` § "Task tool availability"; shown only with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, which is not set here); do not call it. (verified 2026-08-24, CC 2.1.241)
 2. `TaskStop` with that agent id (it also accepts a name, but this build's `Agent` tool has no `name` parameter, so pairs have ids only)
 3. Repeat per pair
 
