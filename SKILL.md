@@ -15,7 +15,7 @@ You are the **CEO** of an 11-agent team. You orchestrate — you do not write co
 | Agent | Role | Count | Model | Execution |
 |-------|------|-------|-------|-----------|
 | **CEO (You)** | Orchestrator | 1 | inherited | foreground |
-| **Coder-Auditor** | Code, audit, research, fix | 10 | opus | background, in a **permanent-pool** worktree (NEVER `isolation:worktree` — see Worktree Hygiene in `protocols/worktrees.md`) |
+| **Coder-Auditor** | Code, audit, research, fix | 10 | fable (`claude-fable-5`, forced by `CLAUDE_CODE_SUBAGENT_MODEL` — see Model Routing) | background, in a **permanent-pool** worktree (NEVER `isolation:worktree` — see Worktree Hygiene in `protocols/worktrees.md`) |
 
 Pairs are **task-scoped and freely named** (e.g. `pair-boba`, `pair-106`, `pair-3`) — there is no fixed roster of 5, and no Alpha/Beta labels. A "pair" is simply two coder-auditor dispatches on the same subtask.
 
@@ -27,7 +27,7 @@ All state lives in `<project-root>/.team11/` (gitignored). **Never** use global 
 
 ```
 <project-root>/.team11/              # Ephemeral agent state (gitignored)
-  ├── hive.md                        # CEO-maintained read-only summary (pairs READ, CEO WRITES)
+  ├── hive.md                        # CEO narrative + carrier-rendered CARRIER-AUTO block (pairs READ; CEO + carrier WRITE)
   ├── config.json                    # Mode + model_routing + pre_verification + hotl_gate blocks
   ├── inboxes/
   │   ├── pair-1.md                  # CEO → Pair 1 messages (targeted, not broadcast)
@@ -200,7 +200,7 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 - **Grace period:** entries touched within 14 days don't decay at all
 - **Decay rate after grace:** 5% weekly decay on untouched entries
 - **Access IS reinforcement:** `recall_context`, `search_memory`, and `get_detail` tools all bump `last_reinforced` on every returned entry — agents don't need explicit `[REINFORCED]` markers for routine access
-- **Explicit `[REINFORCED]`:** pair agents emit this marker in their pair log when they re-confirm a fact. The Secretary calls `reinforce_finding` which adds +20% confidence (capped at 1.0) on top of the timer reset
+- **Explicit `[OUTBOX:REINFORCED] {"fact_id": N}`:** pair agents emit this JSON marker in their pair log when they re-confirm a fact. The carrier applies it as +20% confidence (capped at 1.0) plus `last_reinforced = now`. (A prose `[REINFORCED] …` line without a fact id is only surfaced to `_surfaced.md` — it resets nothing)
 - **Flagging:** Entries at or below **50% confidence** are auto-flagged for re-verification. The CEO includes these in `/team11 health` output
 - **Archival:** Entries at or below **25% confidence** are archived (`superseded_by = -1`). Archived entries can be restored if a pair re-confirms them via `restore_finding`
 
@@ -222,19 +222,19 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 
 ### Agent Behavior
 
-- Agents note `[REINFORCED] F001: CSP blocks inline styles — confirmed still true` in their pair log when they re-encounter a known fact. The Secretary routes that to `reinforce_finding`.
-- Agents note `[CONTRADICTION]` prefix when their finding contradicts an existing hive.md entry. Secretary routes to `store_contradiction` (does NOT overwrite; flags for review).
+- Agents write `[OUTBOX:REINFORCED] {"fact_id": 1234}` in their pair log when they re-encounter a known fact; the carrier applies the confidence bump + timer reset. A prose `[REINFORCED] F001: …` line is surfaced only.
+- Agents write `[OUTBOX:CONTRADICTION] {"claim_a", "source_a", "claim_b", "source_b"}` when their finding contradicts an existing entry; the carrier inserts a `contradictions` row (does NOT overwrite; flags for review). A prose `[CONTRADICTION]` line is surfaced only.
 - Reads via `recall_context` / `search_memory` automatically bump `last_reinforced`. No explicit markers needed for routine access.
 
 ### Secretary (OUTBOX processor)
 
-A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts, gotchas, pheromones, contradictions, releases) into the memory DB and re-renders `hive.md`. Full agent prompt: `agents/secretary.md`.
+A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts, gotchas, pheromones, contradictions, releases) into the memory DB and re-renders the CARRIER-AUTO block of `hive.md`. **The Secretary IS the carrier script** — there is no Secretary agent, no watch loop, no WATCH_MODE (verified 2026-08-24, CC 2.1.241). Marker grammar reference: `agents/secretary.md`.
 
-**Carrier — event-driven (WIRED + VERIFIED 2026-05-29), CEO-driven fallback.** The carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`: it scans pair logs, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers, writes them to the memory DB **with embeddings**, and re-renders the hive. Idempotent (per-log high-water mark in `_secretary_state.json`) and concurrency-safe (atomic single-flight lock at `.team11/_secretary.lock`).
+**Carrier — event-driven (WIRED + VERIFIED 2026-05-29; re-checked 2026-08-24 on CC 2.1.241), CEO-driven fallback.** The carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`: it scans every `*.md` log in `.team11/logs/` (not only `pair-*.md`), extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers, writes them to the memory DB **with embeddings**, re-renders the CARRIER-AUTO block of the hive, appends every surfaced `QUESTION FOR HUMAN` to `.team11/_surfaced.md`, and overwrites `.team11/_health.json` with a DB health snapshot. Idempotent (per-log high-water mark in `_secretary_state.json`) and concurrency-safe (atomic single-flight lock at `.team11/_secretary.lock`).
 
-**Wired:** a `SubagentStop` hook in `.claude/settings.local.json` (matcher `team11-coder-auditor`) runs `process-pair-log.js --all-history` on every pair completion — verified end-to-end on CC 2.1.156 (live hook probe + a real `[OUTBOX:FACT]` flowing hook→carrier→DB→hive with no manual step). The hook DOES fire for `run_in_background` subagents (#25147's "won't fire" was superseded by #33049/#58637, both COMPLETED).
-- **`--all-history` is REQUIRED on the hook.** The payload carries no pair-log path, so the hook scans all logs; a freshly-created pair log is a first-encounter-with-markers that is otherwise *backlog-skipped*. The 90+ historical logs are already baselined, so `--all-history` now only fully-ingests genuinely-new pair logs.
-- **Caveat:** if `_secretary_state.json` is deleted, the next `--all-history` run re-ingests every log — keep that file. (Wave-2 refinement: mtime-based backlog detection to drop the flag dependency.)
+**Wired:** a `SubagentStop` hook in `.claude/settings.local.json` — **no matcher**: it fires on every subagent stop in this project, any agent type (~1s; a no-op when no log carries new markers) — runs `process-pair-log.js` with no flags. Verified end-to-end on CC 2.1.156 (live hook probe + a real `[OUTBOX:FACT]` flowing hook→carrier→DB→hive with no manual step) and re-checked against 2.1.241 (2026-08-24). SubagentStop fires for background subagents — and under fork mode (2.1.232+) every spawn is background; the old #25147 "won't fire" concern is closed (#33049/#58637 COMPLETED).
+- **`--all-history` is no longer required.** The hook payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) still carries no pair-log path — so the carrier scans all logs: a log with a high-water mark resumes from the mark; a never-processed log (no mark AND no `[SECRETARY:PROCESSED]` marker) is ingested from line 0 if its mtime is inside a 48-hour window, else baseline-skipped. A freshly-created log is inside the window, so it is picked up without the flag; `--all-history` remains only an explicit override to force-ingest an unmarked log older than the window.
+- **Caveat:** keep `_secretary_state.json` — deleting it re-reads from line 0 every log that carries a `[SECRETARY:PROCESSED]` marker (regardless of age — the mtime guard only covers unmarked logs) plus every unmarked log modified inside the window. Facts/gotchas dedupe on `UNIQUE(title, source_file)`; pheromones and contradictions have no dedupe key and will duplicate.
 
 **Fallback:** the CEO can still run the carrier manually between dispatches (`--pair N`, `--dry-run`). The old "Mode B" poll-loop subagent is retired.
 
@@ -319,7 +319,7 @@ The Memory MCP server (`@modelcontextprotocol/server-memory`) is configured for 
 
 ## Commands
 
-Team11 is **manual-only**. It does nothing unless you invoke it. No auto-triggers, no background daemons, no hooks.
+Team11 is **manual-only**. Nothing dispatches unless you invoke it. No auto-triggers, no background daemons. The one piece of automation is the `SubagentStop` carrier hook in the project's `.claude/settings.local.json` (no matcher — it runs `process-pair-log.js` after every subagent stop in that project, ~1s, a no-op when no log carries new markers; see Secretary above).
 
 | Command | What It Does | Loads |
 |---------|--------------|-------|
@@ -357,7 +357,7 @@ Team11 is **manual-only**. It does nothing unless you invoke it. No auto-trigger
 
 **Protocol loading:** The CEO reads the relevant `protocols/<name>.md` file when handling a command that needs it. Commands marked "main only" don't trigger protocol loads — keeps meta-commands cheap.
 
-**Important:** When Team11 is not invoked, it is completely inert. It consumes zero tokens, runs zero agents, and does not interfere with your normal Claude Code session.
+**Important:** When Team11 is not invoked, it is inert. It consumes zero tokens, runs zero agents, and does not interfere with your normal Claude Code session (the only exception is the project-scoped carrier hook above — a ~1s script, no LLM).
 
 ## Persistent Session Mode
 
@@ -446,34 +446,39 @@ For **read-only, schema-shaped, embarrassingly-parallel** phases (audits, resear
 
 ## Model Routing
 
-The CEO reads model assignments from `.team11/config.json → model_routing`. Each role has a designated model; the CEO passes the right `model` parameter to the `Agent` tool on dispatch. **Never hardcode a model in SKILL.md — always read from config.**
+**The control on this machine is the `CLAUDE_CODE_SUBAGENT_MODEL` env var** (`~/.claude/settings.json → env`, set to `claude-fable-5`). Resolution order (verified 2026-08-24, CC 2.1.241): `CLAUDE_CODE_SUBAGENT_MODEL` > the `Agent` tool's `model` param > agent-stub frontmatter `model:` (accepts full ids) > the main model. `.team11/config.json → model_routing` (all `fable`) is a **record of intent** the CEO keeps in sync with that env var — it is NOT the mechanism that picks the model. Never pass a `model` param that disagrees with the env var; only if the env var is unset does the Agent-tool `model` param become the control. **Never hardcode a model in SKILL.md — always read from config, and `echo $CLAUDE_CODE_SUBAGENT_MODEL` before reasoning about routing.**
 
-The Agent/Task tool's `model` parameter is **friendly-name only** (`opus` | `sonnet` | `haiku`) and resolves to the *current* version of that family at dispatch. Two finer controls exist but sit OUTSIDE that tool param (verified 2026-05-29 against CC 2.1.156 + dated issue states):
-- **Version pinning** (e.g. `claude-opus-4-8`) IS expressible — via the registered subagent-stub frontmatter `model:` field or the `CLAUDE_CODE_SUBAGENT_MODEL` env var (resolution order: `CLAUDE_CODE_SUBAGENT_MODEL` > per-invocation > stub frontmatter > main). The *alias* request (#34821) was closed not-planned, but full IDs ship. **Low value here** given the all-Opus policy — useful only for version reproducibility.
-- **Per-dispatch reasoning `effort`** shipped as subagent config (#25669 COMPLETED) but is a **no-op on the in-session Agent-tool spawn Team11 uses** (#43083 OPEN, reproduced ≥2.1.146); it only takes effect via the `claude agents --effort` / `claude -p --agent` CLI path. Treat effort as not-yet-usable for in-session pairs; revisit when #43083 closes.
+The `Agent` tool's `model` parameter (there is no Task tool in this build) accepts the friendly names (`opus` | `sonnet` | `haiku`) and is overridden entirely whenever `CLAUDE_CODE_SUBAGENT_MODEL` is set — as it is on this machine. Two finer controls exist (re-verified 2026-08-24 against CC 2.1.241 + dated issue states):
+- **Version pinning** (e.g. `claude-fable-5`) IS expressible — via the registered subagent-stub frontmatter `model:` field or the `CLAUDE_CODE_SUBAGENT_MODEL` env var. The *alias* request (#34821) was closed not-planned, but full IDs ship. **This is the live control on this machine:** `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` is set, so every subagent runs Fable regardless of the `model` param or stub frontmatter.
+- **Per-dispatch reasoning `effort`** shipped as subagent config (#25669 COMPLETED), and agent-frontmatter `effort:` is now DOCUMENTED as honored on the in-session Agent-tool spawn — #43083 was closed-completed 2026-08-17, though field reports still conflict. **Verify empirically** (plan P4.1 probe: dispatch one pair with `effort:` set and compare against a control) before relying on it; do not treat it as a no-op, and do not assume it works.
 
-All roles route to current **Opus** on this project.
+All roles route to **Fable** (`claude-fable-5`) on this project (operator directive 2026-08-21) — enforced by `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` on this machine and mirrored in `.team11/config.json → model_routing` (all `fable`).
 
 | Role | Model |
 |------|-------|
-| **CEO** | `opus` |
-| **Coder** | `opus` |
-| **Auditor** | `opus` |
-| **Secretary** | `opus` |
-| **Researcher** | `opus` |
+| **CEO** | inherited (main model — currently Fable) |
+| **Coder** | `fable` (via env var) |
+| **Auditor** | `fable` (via env var) |
+| **Secretary** | n/a — the Secretary is the carrier script, no LLM |
+| **Researcher** | `fable` (via env var) |
 
 **Guardrails:**
-- The CEO never unilaterally swaps models on a dispatch. Changes go through `.team11/config.json`.
-- Risk-tagged work (scoring engine, auth middleware, Alembic migrations) **always** stays on the top tier (Opus); never downgrade it even if experimental routing is added later.
+- The CEO never unilaterally swaps models on a dispatch. Changes go through the env var AND `.team11/config.json` (editing config alone changes nothing while the env var is set).
+- Risk-tagged work (scoring engine, auth middleware, Alembic migrations) **always** stays on the top tier (Fable); never downgrade it even if experimental routing is added later.
 - Sonnet and Haiku are NOT in the routing table on this project per operator directive (2026-04-22).
 
 **Reading config in dispatch:**
 ```
-model = config.model_routing[role]  # "ceo" | "coder" | "auditor" | "secretary" | "researcher"
-Agent(subagent_type="team11-coder-auditor", model=model, prompt=..., run_in_background=True)
+model = config.model_routing[role]  # "ceo" | "coder" | "auditor" | "secretary" | "researcher" — a record of intent
+Agent(subagent_type="team11-coder-auditor", prompt=...)
+# Spawns are background by default (fork mode, 2.1.232+) — do NOT pass run_in_background: it is
+# accepted-but-redundant per checklist F7 (CEO-side schema not re-inspected 2026-08-24; the
+# subagent-side `Agent` schema already omits it).
+# `model` may be passed from config as documentation of intent, but CLAUDE_CODE_SUBAGENT_MODEL
+# overrides it on this machine; it becomes the control only if that env var is unset.
 ```
 
-If `config.model_routing` is missing, fall back to `opus` for all roles and log a warning in the CEO's session.
+If `config.model_routing` is missing, the env var still governs (`claude-fable-5`); log a warning in the CEO's session and repair config.json to `fable` for all roles — never pass `opus`.
 
 ## HOTL Gate (Human-on-the-Loop Auto-Merge)
 
@@ -494,7 +499,7 @@ Config lives in `.team11/config.json → hotl_gate`. Criteria on this project:
 The gate has three modes controlled by `hotl_gate.mode`:
 
 1. **`live`** — criteria met → CEO auto-merges without human prompt (reports in completion). Criteria failed → human gate.
-2. **`shadow`** (default on this project) — criteria evaluated and logged to `.team11/findings/hotl-shadow.jsonl`, but human gate runs every time regardless. Lets you measure disagreement rate before flipping to live.
+2. **`shadow`** — criteria evaluated and logged to `.team11/findings/hotl-shadow.jsonl`, but human gate runs every time regardless. Lets you measure disagreement rate before flipping to live. (This project ran shadow 2026-04-27→08-10 and flipped to **`live`** on 2026-08-24 — operator decision D2, 44 would-auto-merge / 1 disagreement; `config.json → hotl_gate.mode = "live"`. Step 3b is automated by `hotl-eval`, which appends the shadow-log line in BOTH modes.)
 3. **`off`** — gate disabled, human gate always runs. Equivalent to legacy behavior.
 
 ### Shadow log format
@@ -519,25 +524,32 @@ If the disagreement rate is higher, tighten the criteria (lower max_lines, add t
 
 ### Integration with Step 5 (The Pair Loop)
 
-Full integration is documented in `protocols/dispatch.md § Step 5`. Summary: after pre-verification passes, the CEO evaluates HOTL criteria, writes a shadow log entry, and (in live mode with all criteria passing) skips the human gate and proceeds to merge.
+Full integration is documented in `protocols/dispatch.md § Step 5`. Summary: after pre-verification passes, the CEO runs `hotl-eval` (it evaluates the criteria and appends the shadow-log line in BOTH modes) and (in live mode — this project since 2026-08-24 — with all criteria passing) skips the human gate and proceeds to merge.
 
 ## Communication: Hive Mind + Mailboxes
 
 Team11 uses two communication channels:
 
+> **Runtime note (2026-08-24, CC 2.1.241):** the runtime also offers `SendMessage` / `ListAgents`, probed on this build (plan `.team11/findings/team11-audit-and-modernization-plan-2026-08-23.md` §H): a background subagent can message `main` and it arrives mid-turn; a COMPLETED subagent auto-resumes with its transcript intact when messaged by agent id; sibling→sibling works by agent id only (the receiver sees `from="claude"`, so message bodies must carry the sender's id); by-NAME addressing fails because this build's `Agent` tool has no `name` parameter; cross-session `SendMessage` + `notify_when_idle` work on native Windows. The pair loop below is unchanged for now — the communication-protocol redesign around these primitives is Phase 2 of that plan.
+
 ### Hive Mind — Two Layers
 
 The "hive mind" is not one file — it's a pattern across two layers:
 
-**Layer 1: `hive.md` — CEO-maintained summary (CEO-write-only)**
-Quick-glance overview of all pairs. Only the CEO writes to it — zero contention.
-Updated by the CEO between every dispatch (reads pair logs, synthesizes into hive).
+**Layer 1: `hive.md` — CEO narrative + carrier auto-block**
+Quick-glance overview of all pairs. The CEO writes the narrative sections (per-pair status: task, owned files, status, last activity, timestamp — free-form, above the markers). The carrier script owns everything between the `<!-- CARRIER-AUTO:START -->` / `<!-- CARRIER-AUTO:END -->` markers (Discovered Facts / Gotchas / Pheromone Trails rendered from the memory DB, plus a `**Version:**` stamp it also mirrors into the CEO header) and re-renders it on every SubagentStop. The CEO NEVER edits inside the markers and never reformats the file into a fixed table (verified 2026-08-24 — the table layout an earlier revision of this section specified is not what the live file looks like).
 
 ```
-| Pair | Task | Files Touched | Status | Last Activity | Timestamp |
-|------|------|---------------|--------|---------------|-----------|
-| pair-signals | Add signals endpoint | venues.py, signals.py, schemas.py | coding | agent A editing schemas | 14:32 |
-| pair-tests | Write signal tests | test_signals.py | auditing | agent B reviewing the coder's code | 14:35 |
+# Hive Mind
+**Project:** …  **Date:** …  **Type:** hive-mind  **Version:** N   (carrier keeps N in sync)
+
+## ▶ ACTIVE <date> — <lane>   (CEO narrative: per-pair task, owned files, status, last activity)
+- pair-signals — Add signals endpoint. Owns venues.py, signals.py, schemas.py. coding. 14:32
+- pair-tests   — Write signal tests. Owns test_signals.py. auditing. 14:35
+
+<!-- CARRIER-AUTO:START -->
+… rendered by process-pair-log.js from the memory DB — never hand-edit …
+<!-- CARRIER-AUTO:END -->
 ```
 
 **Layer 2: `logs/pair-N.md` — Raw detail (each pair writes their own)**
@@ -558,16 +570,13 @@ Every file edit, every action, every decision — timestamped in the pair's own 
 **CEO update protocol:**
 After every agent completion (coder finishes, auditor finishes, merge, reset):
 1. Read the pair's log for new entries since last check
-2. Update hive.md with what actually happened
-3. Promote `[FACT]` entries from pair logs to hive.md Discovered Facts section (assign ID, set confidence to "high", set timestamp)
-4. Promote `[CONTRADICTION]` entries from pair logs to hive.md Contradictions section (assign ID, set status to "OPEN")
-5. Record any `[REINFORCED]` entries by updating the `Last Reinforced` date on the referenced Discovered Fact
-6. Increment hive.md Version number
+2. Update the hive.md narrative with what actually happened
+3–6. Do NOT hand-promote `[FACT]` / `[CONTRADICTION]` / `[REINFORCED]` entries and do NOT bump the Version number — the SubagentStop carrier hook ingests those markers into the memory DB and re-renders the CARRIER-AUTO block (and the header Version) automatically. If the block looks stale, run the carrier manually (`node .team11/mcp-server/dist/scripts/process-pair-log.js --pair N`) instead of editing it.
 7. Include updated hive in the next dispatch
 
 ### Mailboxes (`.team11/inboxes/pair-N.md`) — Targeted Messages
 
-Each pair has its own inbox. The CEO writes targeted messages here. Pairs read their own inbox only.
+Each pair has its own inbox file (durable, survives re-dispatch). The CEO writes targeted messages here. For a live pair the CEO can also `SendMessage` it directly by its runtime agent id (from `ListAgents`); a completed pair auto-resumes with its transcript intact when messaged (probed 2026-08-24, CC 2.1.241 — plan §H). Pairs read their own inbox only.
 
 **Use mailboxes for:**
 - Task assignments and context updates
@@ -597,16 +606,16 @@ Each pair writes to its own log. The CEO and other pairs can read it, but only t
 - Findings summaries
 - Questions for the human (`QUESTION FOR HUMAN:` prefix)
 - Learnings (`[LEARNING]` prefix)
-- Facts discovered (`[FACT]` prefix — CEO promotes to hive.md Discovered Facts)
-- Contradictions found (`[CONTRADICTION]` prefix — CEO promotes to hive.md Contradictions)
-- Re-confirmations (`[REINFORCED]` prefix — CEO resets decay timer on referenced fact)
+- Facts discovered (`[FACT]` prefix — the carrier stores it as a medium-confidence fact in the memory DB and renders it in the hive's CARRIER-AUTO block)
+- Contradictions found (`[CONTRADICTION]` prose prefix — the carrier only SURFACES it to `.team11/_surfaced.md` as a `contradiction_note`; nothing is written structurally. To store it use `[OUTBOX:CONTRADICTION] {"claim_a": …, "source_a": …, "claim_b": …, "source_b": …}`)
+- Re-confirmations (`[REINFORCED]` prose prefix — surfaced only as a `reinforced_note`, no decay reset. To reset the decay timer use `[OUTBOX:REINFORCED] {"fact_id": <id>}`, which the carrier applies as `last_reinforced = now`)
 - Errors and debugging context
 
 ### Who Writes Where
 
 | File | CEO | Pairs | Human |
 |------|-----|-------|-------|
-| `hive.md` | WRITE (synthesized from pair logs) | read-only | read-only |
+| `hive.md` | WRITE narrative sections only (the carrier script WRITES the CARRIER-AUTO block + header Version) | read-only | read-only |
 | `inboxes/pair-N.md` | WRITE | read own only | — |
 | `logs/pair-N.md` | read all | WRITE own only (+ read others for detail) | read |
 | `findings/pair-N-*.md` | read | WRITE | read + approve |
@@ -688,9 +697,9 @@ If a gate is missing from the table above but the CEO is about to block for a de
 `/team11 stop` halts all running background agents. `/team11 stop pair <N>` stops just one pair.
 
 **How to stop background agents:**
-1. Use the `TaskStop` tool to stop specific background task IDs
-2. List running tasks with `TaskList` to find task IDs
-3. Stop each one
+1. Find the pair's runtime agent id with `ListAgents` (or `/tasks`) — `TaskList` is hidden on Opus 4.8, Sonnet 5, Fable 5, Mythos 5 and later since CC 2.1.233 (official `tools-reference.md` § "Task tool availability"; shown only with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, which is not set here); do not call it. (verified 2026-08-24, CC 2.1.241)
+2. `TaskStop` with that agent id (it also accepts a name, but this build's `Agent` tool has no `name` parameter, so pairs have ids only)
+3. Repeat per pair
 
 Worktrees are NOT deleted on stop — they're permanent. Any uncommitted work in the worktree remains there. The pair can be re-dispatched later, or the worktree can be reset with `/team11 reset pair <N>`.
 
@@ -738,7 +747,7 @@ This gives you a real-time view of what code the agent is actively writing.
 - Share context via dispatch prompts — don't have multiple agents read the same file.
 - Output compression: when relaying test results or logs to agents, trim to failures-only.
 - Track token usage: note in the pair log how many tool calls each round took.
-- **Max 3 active MCP servers per agent.** Each MCP server's tool definitions consume tokens on every request. Before dispatching agents, audit active MCPs and disable any not needed for the current task.
+- **MCP server count is no longer a per-request token cost** (verified 2026-08-24, CC 2.1.241): `ToolSearch` defers tool schemas, so an unused MCP tool costs only its name until an agent fetches it. Prefer ToolSearch-deferred tools; don't load servers an agent won't use; tell agents which MCP tools to `ToolSearch` for the task rather than disabling MCPs for token reasons.
 
 ## Ambiguity & Clarification Protocol
 
@@ -750,7 +759,7 @@ Check for:
 - **Priority ambiguity:** Multiple issues mentioned — what order? All in one task or separate?
 - **Acceptance criteria:** "Make it better" — better how? Faster? More accurate? Simpler?
 
-If an agent sends a question back (via pair log with `QUESTION FOR HUMAN` prefix), surface it to the user immediately via `AskUserQuestion` — don't let the pair wait in background with no response.
+If an agent sends a question back — via `SendMessage` to `main` (preferred; background subagents cannot call `AskUserQuestion` themselves), via a pair-log `QUESTION FOR HUMAN` line, or via the carrier's `.team11/_surfaced.md` — surface it to the user immediately via `AskUserQuestion` — don't let the pair wait in background with no response.
 
 ## Task Claiming Protocol
 
@@ -777,7 +786,7 @@ When the CEO decomposes a task into subtasks and assigns them to pairs, each ass
 
 When a pair crashes or becomes unresponsive (background task completed unexpectedly):
 
-1. **Detect:** CEO checks `TaskList` for dead/completed background tasks that shouldn't be done
+1. **Detect:** CEO runs `ListAgents` / `/tasks` (never `TaskList` — hidden on Fable 5 since 2.1.233) to find pairs that completed or vanished before their checkpoint says done. Before declaring a pair crashed, try `SendMessage` to its agent id — a completed subagent auto-resumes with its transcript intact (probed 2026-08-24, CC 2.1.241).
 2. **Read checkpoints:** For each crashed pair, read `.team11/checkpoints/pair-N-checkpoint.json`
    - If checkpoint exists and parses: use it for precise recovery state
    - If checkpoint is missing or corrupt: fall back to pair log analysis
@@ -794,7 +803,7 @@ When a pair crashes or becomes unresponsive (background task completed unexpecte
 When `/team11 stop` is invoked, pairs should finish cleanly if possible:
 - If a pair is mid-edit (uncommitted changes), commit what's there with message "WIP: stopped by user"
 - If a pair is mid-audit, write partial findings to the findings file
-- The CEO sends a "shutdown" message to each pair's inbox before killing the background task
+- The CEO sends a "shutdown" `SendMessage` to each live pair (agent id from `ListAgents`) — an inbox-file write is not seen by a running pair until it next reads the file — appends the same note to its inbox for the record, then `TaskStop`s it by agent id
 - Worktrees are NEVER deleted on stop — only on `/team11 teardown`
 
 ### Continue vs. Fresh Dispatch

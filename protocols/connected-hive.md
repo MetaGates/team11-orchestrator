@@ -73,14 +73,12 @@ TEAM11 OPERATORS — eoc-gengine/loopborn
 
 ## Hive Mind in Connected Mode
 
-The hive table gains an **Operator** column:
+The shared hive keeps the local layout (verified 2026-08-24): CEO narrative **plus the carrier auto-block between the `<!-- CARRIER-AUTO:START -->` / `<!-- CARRIER-AUTO:END -->` markers** (rendered by `process-pair-log.js` from `[OUTBOX:*]` / `[FACT]` markers in pair logs — never hand-edited). In connected mode every entry carries the operator-prefixed pair id the log/outbox already uses (`cs-pair-1`), and the CEO's narrative section records cross-operator claims as lines such as:
 ```markdown
-## Active Edits
-| Operator | Pair | File | Action | Status | Timestamp |
-|----------|------|------|--------|--------|-----------|
-| cs | cs-pair-1 | client-game/src/ui/HUD.js | Refactoring layout | coding | 14:32 |
-| owl | owl-pair-1 | nakama/src/combat.ts | Fix boss AI | auditing | 14:30 |
+- cs-pair-1  → client-game/src/ui/HUD.js (Refactoring layout, coding, 14:32)
+- owl-pair-1 → nakama/src/combat.ts (Fix boss AI, auditing, 14:30)
 ```
+Do not introduce a separate `## Active Edits` table; sync the whole file as-is.
 
 **File claim checking (core anti-regression mechanism):** before dispatching any pair, the CEO reads the shared hive — if ANY operator's pair (including other humans') already claims a file, BLOCK (wait, re-scope, or ask the human). No two agents across ANY operator touch the same file simultaneously.
 

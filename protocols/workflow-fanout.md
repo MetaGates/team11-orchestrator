@@ -1,7 +1,7 @@
 # Workflow-Backed Fan-Out — Protocol
 **Project:** Team11 (generic)
 **Type:** protocol
-**Last updated:** 2026-05-29
+**Last updated:** 2026-08-24 (runtime facts re-verified against CC 2.1.241)
 
 How the Team11 CEO delegates a **read-only, parallel fan-out phase** to the native `Workflow` tool, then feeds the validated results into the gated pair loop. Load this whenever a task has a scatter→gather phase (audit, research sweep, multi-file analysis, scoring, classification, list-curation-style scatter).
 
@@ -12,7 +12,7 @@ Output quality is **method-independent** — equal between a Workflow and a Team
 - **Team11 gated loop = the governed process** for writes.
 
 ## Cost model — what Workflow saves (and what it does NOT)
-Workflow saves **wall-clock time** (parallelism) and **main-context budget** (subagents read in their own windows; only distilled results return). It does **NOT** save total tokens — for the same reads it costs **more** than serial (per-agent system-prompt overhead + duplicated reading). Its only token win is indirect: subagent reads are one-shot, so offloading bulk reading keeps the *recurring* main context lean. **The real token-savers are disciplined grep and LSP (`lsp_find_references` / `lsp_goto_definition`) for structural questions — no broad file reads.** Never reach for a Workflow to "save tokens" or to do a narrow lookup — there it is pure overhead.
+Workflow saves **wall-clock time** (parallelism) and **main-context budget** (subagents read in their own windows; only distilled results return). It does **NOT** save total tokens — for the same reads it costs **more** than serial (per-agent system-prompt overhead + duplicated reading). Its only token win is indirect: subagent reads are one-shot, so offloading bulk reading keeps the *recurring* main context lean. **The real token-savers are disciplined, targeted Grep (ripgrep) queries for structural questions — no broad file reads.** (The former `lsp_*` tools shipped with OMC, removed 2026-08-24 — do not call them.) Never reach for a Workflow to "save tokens" or to do a narrow lookup — there it is pure overhead.
 
 ## Decision rule (per phase, not per task) — the cost-tier ladder
 Pick the **cheapest tool that fits the question shape**:
@@ -20,7 +20,7 @@ Pick the **cheapest tool that fits the question shape**:
 | Question shape | Tool | Why |
 |---|---|---|
 | Narrow / specific ("what does X do", "where is Y defined") | **grep + targeted read** | cheapest; always fresh; read only what you need |
-| Repeated **structural** ("who calls X", "impact of changing Y") | **ripgrep / LSP** (`lsp_find_references`, `lsp_goto_definition`) | always fresh + accurate; no precomputed graph to go stale |
+| Repeated **structural** ("who calls X", "impact of changing Y") | **Grep (ripgrep) with `-n`/`-C` context, `type`/`glob` filters, and `output_mode: "count"` for call-site tallies** | always fresh + accurate; no precomputed graph to go stale. (The former `lsp_*` tools shipped with OMC, removed 2026-08-24 — no `lsp_*`/`ast_grep_*` tool exists in this build.) |
 | **Broad / semantic / many similar items, read-only** | **Workflow fan-out** | parallel (time) + isolates main context — the engine for read-only scatter→gather |
 | **Writes** / approval / role rotation / durable findings / cross-run memory | **Team11 pair loop** | governed process |
 
@@ -34,8 +34,8 @@ Pick the **cheapest tool that fits the question shape**:
 
 ## How the CEO invokes it
 1. Identify the fan-out: the item list (files, sources, venues, dimensions) + the per-item read-only task.
-2. Author a Workflow script: `meta` block + a JSON `schema` for findings + `parallel(items.map(() => agent(prompt, {schema})))` for the scatter + one synthesis `agent()` for the gather (dedupe + rank).
-3. Call the `Workflow` tool. It returns a `runId`; watch via `/workflows`; you're notified on completion.
+2. Author a Workflow script: `meta` block + a JSON `schema` for findings + a scatter over the items **chunked to ≤15 concurrent `agent()` calls per `parallel()`** (the Workflow tool hard-caps 16 concurrent agents and defaults `workflowSizeGuideline` to medium/<15, advisory — loop over chunks, `await` each, concatenate; verified 2026-08-24, CC 2.1.241) + one synthesis `agent()` for the gather (dedupe + rank). Give same-shaped agents an identical prompt prefix — the runtime staggers same-prefix siblings so they share the prompt cache. A saved workflow in `.claude/workflows/<name>` runs as `/<name>` with args.
+3. Call the `Workflow` tool **from the CEO's own (main) conversation — a background subagent cannot launch one, so never delegate the fan-out itself to a pair or researcher; a pair that needs a fan-out asks the CEO for it.** It returns a `runId`; watch via `/workflows`; you're notified on completion. Workflow subagents run in `acceptEdits` permission mode, so invariant 3's explicit "do NOT edit / write" line in every agent prompt is load-bearing, not decorative.
 4. Take the returned **structured** results → present to the human via `AskUserQuestion` (the gate) → dispatch the **pair loop** for any approved writes.
 
 ## Repeatability — what it does and does NOT mean

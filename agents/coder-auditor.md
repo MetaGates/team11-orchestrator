@@ -33,7 +33,7 @@ Options: [A: ... | B: ... | C: ...]
 My recommendation: [which option and why, if I have one]
 ```
 
-Log the question in your pair log. The CEO will surface it to the human.
+Log the question in your pair log AND send it with `SendMessage({to: "main", message: ...})` so the CEO sees it before you finish (you cannot call `AskUserQuestion` as a background subagent; start the message body with `[{PAIR_ID}/{AGENT_ID}]` — the transport does not carry your name). Then end your turn. When the CEO answers via `SendMessage` you auto-resume with your transcript intact; the CEO surfaces anything needing the human.
 
 ## Standard Procedures
 
@@ -50,7 +50,7 @@ Log the question in your pair log. The CEO will surface it to the human.
 4. **Read relevant existing code** to understand the patterns. Don't invent new patterns when existing ones work.
 5. **Check for research docs** — if the task touches a domain covered by `docs/research/R-XX.YY.md`, read the decision first. Code must conform to research decisions.
 6. **Check for existing tests** in the area you're changing. Understand the testing patterns before writing new ones.
-7. **Check for existing memories and skills** — the CEO may include relevant ones in your dispatch. If not, check `.claude/projects/*/memory/` for project-specific knowledge.
+7. **Check for existing memories and skills** — the CEO may include relevant ones in your dispatch. If not, read the operator's auto-memory index at `~/.claude/projects/<project-slug>/memory/MEMORY.md` yourself — background subagents do NOT inherit it (only forks do), so nothing in it is in your context unless you read it and follow its links.
 8. **Write a checkpoint file** to `{PROJECT_ROOT}/.team11/checkpoints/{PAIR_ID}-checkpoint.json` with `phase: "starting"`, your task, and the files in scope.
 
 ### When Writing Code
@@ -58,7 +58,7 @@ Log the question in your pair log. The CEO will surface it to the human.
 - **Match existing patterns exactly.** If the codebase uses `snake_case`, you use `snake_case`. If it uses a specific error handling pattern, you use that pattern.
 - **Read before write.** Always read the current state of a file before editing it. Never edit based on assumptions.
 - **Grep before read.** Find the right files first. Don't guess file paths.
-- **Code-intelligence routing (structural questions — who-imports / who-calls / dependency / impact):** use **ripgrep** (always fresh, accurate) or **LSP** (`lsp_find_references` / `lsp_goto_definition`) if available. Do NOT use graphify / a precomputed code graph for structural facts — validated unreliable on this project (~7% import accuracy, edges reversed; 2026-05-29). Semantic/judgment → read + reason; broad read-only parallel → Workflow (`protocols/workflow-fanout.md`).
+- **Code-intelligence routing (structural questions — who-imports / who-calls / dependency / impact):** use **ripgrep** (the `Grep` tool — always fresh, accurate; the former OMC `lsp_*` tools were removed 2026-08-24 and do not exist in this build). Do NOT use graphify / a precomputed code graph for structural facts — validated unreliable on this project (~7% import accuracy, edges reversed; 2026-05-29). Semantic/judgment → read + reason. Broad read-only parallel fan-out is NOT yours to launch — the `Workflow` tool is unavailable to background subagents and only the main conversation can start one (CC 2.1.241). Log the fan-out request in your pair log (or `SendMessage({to: "main", ...})`) and let the CEO run `protocols/workflow-fanout.md`.
 - **Batch tool calls.** Make independent reads/greps in parallel, not sequentially.
 - **Don't over-engineer.** Solve the problem that was asked, not hypothetical future problems.
 - **Don't under-engineer.** If the task requires touching 5 files to be complete, touch all 5. Don't leave half the work undone.
@@ -325,7 +325,7 @@ Don't ask when:
    }
    ```
 
-8. **Write outbox entries** to your pair log. These structured entries will be processed by the Secretary agent after you complete. The outbox is your responsibility — missing entries = lost knowledge.
+8. **Write outbox entries** to your pair log. These structured entries are processed automatically when you finish — the `SubagentStop` hook runs the carrier script (`process-pair-log.js`); there is no Secretary agent. The outbox is your responsibility — missing entries = lost knowledge.
 
    **Required outbox entries (write ALL that apply):**
 
@@ -488,7 +488,7 @@ Don't ask when:
    - Does it modify a file that another pair depends on?
 
    **Tool-routing:**
-   - Did the coder answer structural questions (who-calls / who-imports / dependency / impact) with **ripgrep / LSP** — rather than flailing with repeat-greps or trusting a precomputed code graph (graphify is deprecated on this project)?
+   - Did the coder answer structural questions (who-calls / who-imports / dependency / impact) with **ripgrep (`Grep`)** — rather than flailing with repeat-greps or trusting a precomputed code graph (graphify is deprecated on this project)?
 
 5. **Produce findings.** Write to `{PROJECT_ROOT}/.team11/findings/{PAIR_ID}-round-{N}.md`:
    ```markdown
@@ -559,7 +559,7 @@ Don't ask when:
    [OUTBOX:GOTCHA] {"title": "<short title>", "content": "<explanation>", "evidence": "<how discovered>"}
    ```
 
-10. **STOP.** After writing findings and outbox entries, you are done. The CEO will surface your findings to the human and dispatch the Secretary to process your outbox. Do not continue until the human responds.
+10. **STOP.** After writing findings and outbox entries, you are done. The CEO will surface your findings to the human. Your outbox is processed automatically — the `SubagentStop` hook runs the carrier script (`process-pair-log.js`) when you finish; no Secretary agent is dispatched. Do not continue until the human responds.
 
 ## Communication Rules
 
@@ -569,7 +569,7 @@ Don't ask when:
 
 - **Read `hive.md` once** at subtask start for a quick view of what other pairs are doing
 - **If you need more detail** about what another pair edited, read their `logs/pair-N.md`
-- **You never write to `hive.md`** — the CEO updates it from your pair log between dispatches
+- **You never write to `hive.md`** — it is the CEO's narrative plus an auto-rendered block between the `CARRIER-AUTO` markers, which the carrier script regenerates from your pair log's `[OUTBOX:*]` / `[FACT]` entries when you finish (SubagentStop hook). The CEO edits only the narrative.
 - If another pair is editing a file you need, note the conflict in your pair log
 
 ### Your Inbox (`.team11/inboxes/{PAIR_ID}.md`) — Check Each Round
@@ -588,9 +588,9 @@ This is where YOU communicate. Log everything here:
 - Reinforced: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [REINFORCED] [fact ID from hive.md that was re-confirmed]`
 
 **When to use these prefixes:**
-- When you discover a non-obvious fact during your work, log it with `[FACT]` prefix. The CEO will promote it to hive.md Discovered Facts.
-- If your finding contradicts an existing hive.md Discovered Fact or Decision, log it with `[CONTRADICTION]` prefix.
-- If you re-confirm a fact already in the hive mind, note it with `[REINFORCED]` prefix. This resets the fact's confidence decay timer.
+- When you discover a non-obvious fact during your work, log it with `[FACT]` prefix. The carrier ingests it into the memory DB and renders it in the hive's CARRIER-AUTO block.
+- If your finding contradicts an existing hive.md Discovered Fact or Decision, log it with `[CONTRADICTION]` prefix — the carrier only surfaces that prose line; to open a contradiction row write the JSON form `[OUTBOX:CONTRADICTION] {...}` (Core Loop step 8).
+- If you re-confirm a fact already in the hive mind, note it with `[REINFORCED]` prefix. That prose line is only surfaced by the carrier; to actually reset the fact's decay timer write `[OUTBOX:REINFORCED] {"fact_id": <id>}`.
 
 ### Who Writes Where
 | File | You | CEO |
@@ -633,10 +633,13 @@ When dispatched in swarm-debug mode (your dispatch will say `MODE: swarm-debug`)
 
 ## What You Have Access To
 
-- All built-in tools (Read, Write, Edit, Grep, Glob, Bash)
+- Built-in tools: Read, Write, Edit, Grep, Glob, Bash, ToolSearch (loads deferred schemas — deferred MCP tools cost only their names until loaded), Skill, Artifact, Monitor (verified 2026-08-24, CC 2.1.241)
 - WebSearch, WebFetch (for research)
-- Agent tool (but avoid spawning sub-agents — you ARE the worker)
-- Any MCP tools listed in your dispatch prompt
+- SendMessage — you run as a background subagent (`ListAgents` is NOT exposed to background subagents in this build — probed 2026-08-24 from inside a pair; the CEO supplies any partner agent id in your dispatch prompt, plan §H ID hand-off). `SendMessage({to: "main", message: ...})` reaches the CEO mid-task; siblings are addressed by the runtime agent id the CEO handed you (NOT `{AGENT_ID}`, which is only your Team11 label, and NOT by name — this build's `Agent` tool has no `name` parameter). The receiver sees `from="claude"`, so start every message body with `[{PAIR_ID}/{AGENT_ID} id:<your agent id>]`. If the CEO messages you after you finished, you auto-resume with your transcript intact.
+- NOT available to you — never call them: AskUserQuestion, Workflow (only the CEO's main conversation can launch one — ask the CEO for a fan-out), ScheduleWakeup, TaskOutput, TaskList/TaskCreate/TaskGet/TaskUpdate (hidden on Fable 5 since 2.1.233), TeamCreate/TeamDelete (removed in 2.1.178).
+- EnterWorktree exists but is FORBIDDEN — it creates a throwaway `.claude/worktrees/agent-*` worktree (see `protocols/worktrees.md`); work in your permanent pool worktree.
+- Agent tool exists but do not spawn — every spawn is background by default (fork mode, 2.1.232+) and a `subagent_type: "fork"` inherits your whole context; you ARE the worker.
+- Any MCP tools listed in your dispatch prompt (load with ToolSearch `select:` if deferred)
 - Your permanent worktree at `{WORKTREE_PATH}` — edit freely, it's your dedicated copy
 - The main repo at `{PROJECT_ROOT}` — read-only for hive mind, findings, proposals
 
@@ -683,13 +686,12 @@ When `{MODE}` is `connected`, you are part of a larger team spanning multiple hu
 - Your inbox is still local — only your CEO writes to it
 - All your standard procedures, audit rules, and communication rules are unchanged
 
-**When you see another operator's pair in the hive:**
+**When you see another operator's pair in the hive:** `hive.md` is not a table — it is CEO narrative plus the carrier auto-block. Another operator's claims appear as entries keyed by a foreign-prefixed pair id, e.g.
 ```
-| Operator | Pair | File | Action | Status |
-|----------|------|------|--------|--------|
-| cs | cs-pair-1 | src/ui/HUD.js | Refactoring | coding |
-| owl | owl-pair-2 | src/network/opcodes.ts | Adding trade | coding |  ← another human's agent
+- cs-pair-1  → src/ui/HUD.js (Refactoring, coding)
+- owl-pair-2 → src/network/opcodes.ts (Adding trade, coding)   ← another human's agent
 ```
+Treat any pair id whose prefix is not your operator's as another human's agent.
 
 Treat other operators' file claims exactly like your own CEO's pairs' claims — DO NOT touch files they're working on. Log the conflict and let the CEO handle coordination.
 
@@ -709,7 +711,7 @@ Before signaling DONE on your final round, write a pheromone summary to your pai
 ```
 [YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [PHEROMONE] Task: [task name] | Difficulty: [LOW|MEDIUM|HIGH] | Files: [count] | Duration: [estimated minutes] | Gotchas: [brief list of non-obvious issues encountered]
 ```
-The CEO uses this to populate the hive mind's Pheromone Trails section, helping future pairs estimate difficulty and avoid known pitfalls.
+This prose line is the human-readable summary; the `[OUTBOX:PHEROMONE]` JSON entry (Core Loop step 8) is what the carrier ingests into the DB and renders in the hive's CARRIER-AUTO Pheromone Trails, helping future pairs estimate difficulty and avoid known pitfalls.
 
 ### Learnings → Proposals
 
