@@ -200,7 +200,7 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 - **Grace period:** entries touched within 14 days don't decay at all
 - **Decay rate after grace:** 5% weekly decay on untouched entries
 - **Access IS reinforcement:** `recall_context`, `search_memory`, and `get_detail` tools all bump `last_reinforced` on every returned entry — agents don't need explicit `[REINFORCED]` markers for routine access
-- **Explicit `[REINFORCED]`:** pair agents emit this marker in their pair log when they re-confirm a fact. The Secretary calls `reinforce_finding` which adds +20% confidence (capped at 1.0) on top of the timer reset
+- **Explicit `[OUTBOX:REINFORCED] {"fact_id": N}`:** pair agents emit this JSON marker in their pair log when they re-confirm a fact. The carrier applies it as +20% confidence (capped at 1.0) plus `last_reinforced = now`. (A prose `[REINFORCED] …` line without a fact id is only surfaced to `_surfaced.md` — it resets nothing)
 - **Flagging:** Entries at or below **50% confidence** are auto-flagged for re-verification. The CEO includes these in `/team11 health` output
 - **Archival:** Entries at or below **25% confidence** are archived (`superseded_by = -1`). Archived entries can be restored if a pair re-confirms them via `restore_finding`
 
@@ -222,8 +222,8 @@ The memory DB uses a **usage-weighted + grace-period** model. See `.team11/mcp-s
 
 ### Agent Behavior
 
-- Agents note `[REINFORCED] F001: CSP blocks inline styles — confirmed still true` in their pair log when they re-encounter a known fact. The Secretary routes that to `reinforce_finding`.
-- Agents note `[CONTRADICTION]` prefix when their finding contradicts an existing hive.md entry. Secretary routes to `store_contradiction` (does NOT overwrite; flags for review).
+- Agents write `[OUTBOX:REINFORCED] {"fact_id": 1234}` in their pair log when they re-encounter a known fact; the carrier applies the confidence bump + timer reset. A prose `[REINFORCED] F001: …` line is surfaced only.
+- Agents write `[OUTBOX:CONTRADICTION] {"claim_a", "source_a", "claim_b", "source_b"}` when their finding contradicts an existing entry; the carrier inserts a `contradictions` row (does NOT overwrite; flags for review). A prose `[CONTRADICTION]` line is surfaced only.
 - Reads via `recall_context` / `search_memory` automatically bump `last_reinforced`. No explicit markers needed for routine access.
 
 ### Secretary (OUTBOX processor)
@@ -233,8 +233,8 @@ A Secretary processes the `[OUTBOX:*]` entries pairs write to their logs (facts,
 **Carrier — event-driven (WIRED + VERIFIED 2026-05-29; re-checked 2026-08-24 on CC 2.1.241), CEO-driven fallback.** The carrier is the one-shot script `.team11/mcp-server/dist/scripts/process-pair-log.js`: it scans every `*.md` log in `.team11/logs/` (not only `pair-*.md`), extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` markers, writes them to the memory DB **with embeddings**, re-renders the CARRIER-AUTO block of the hive, appends every surfaced `QUESTION FOR HUMAN` to `.team11/_surfaced.md`, and overwrites `.team11/_health.json` with a DB health snapshot. Idempotent (per-log high-water mark in `_secretary_state.json`) and concurrency-safe (atomic single-flight lock at `.team11/_secretary.lock`).
 
 **Wired:** a `SubagentStop` hook in `.claude/settings.local.json` — **no matcher**: it fires on every subagent stop in this project, any agent type (~1s; a no-op when no log carries new markers) — runs `process-pair-log.js` with no flags. Verified end-to-end on CC 2.1.156 (live hook probe + a real `[OUTBOX:FACT]` flowing hook→carrier→DB→hive with no manual step) and re-checked against 2.1.241 (2026-08-24). SubagentStop fires for background subagents — and under fork mode (2.1.232+) every spawn is background; the old #25147 "won't fire" concern is closed (#33049/#58637 COMPLETED).
-- **`--all-history` is no longer required.** The hook payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) still carries no pair-log path — so the carrier scans all logs and treats any log whose mtime is inside a 48-hour window as live (ingested from line 0); a freshly-created log is picked up without the flag. `--all-history` remains only an explicit override to force-ingest a log older than the window.
-- **Caveat:** keep `_secretary_state.json` — deleting it re-ingests from line 0 every log modified inside the mtime window (possible duplicate entries) and re-baselines the rest.
+- **`--all-history` is no longer required.** The hook payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) still carries no pair-log path — so the carrier scans all logs: a log with a high-water mark resumes from the mark; a never-processed log (no mark AND no `[SECRETARY:PROCESSED]` marker) is ingested from line 0 if its mtime is inside a 48-hour window, else baseline-skipped. A freshly-created log is inside the window, so it is picked up without the flag; `--all-history` remains only an explicit override to force-ingest an unmarked log older than the window.
+- **Caveat:** keep `_secretary_state.json` — deleting it re-reads from line 0 every log that carries a `[SECRETARY:PROCESSED]` marker (regardless of age — the mtime guard only covers unmarked logs) plus every unmarked log modified inside the window. Facts/gotchas dedupe on `UNIQUE(title, source_file)`; pheromones and contradictions have no dedupe key and will duplicate.
 
 **Fallback:** the CEO can still run the carrier manually between dispatches (`--pair N`, `--dry-run`). The old "Mode B" poll-loop subagent is retired.
 
@@ -472,7 +472,8 @@ All roles route to **Fable** (`claude-fable-5`) on this project (operator direct
 model = config.model_routing[role]  # "ceo" | "coder" | "auditor" | "secretary" | "researcher" — a record of intent
 Agent(subagent_type="team11-coder-auditor", prompt=...)
 # Spawns are background by default (fork mode, 2.1.232+) — do NOT pass run_in_background: it is
-# accepted-but-redundant in this build (verified 2026-08-24, CC 2.1.241) and may leave the schema.
+# accepted-but-redundant per checklist F7 (CEO-side schema not re-inspected 2026-08-24; the
+# subagent-side `Agent` schema already omits it).
 # `model` may be passed from config as documentation of intent, but CLAUDE_CODE_SUBAGENT_MODEL
 # overrides it on this machine; it becomes the control only if that env var is unset.
 ```
@@ -498,7 +499,7 @@ Config lives in `.team11/config.json → hotl_gate`. Criteria on this project:
 The gate has three modes controlled by `hotl_gate.mode`:
 
 1. **`live`** — criteria met → CEO auto-merges without human prompt (reports in completion). Criteria failed → human gate.
-2. **`shadow`** (default on this project) — criteria evaluated and logged to `.team11/findings/hotl-shadow.jsonl`, but human gate runs every time regardless. Lets you measure disagreement rate before flipping to live.
+2. **`shadow`** — criteria evaluated and logged to `.team11/findings/hotl-shadow.jsonl`, but human gate runs every time regardless. Lets you measure disagreement rate before flipping to live. (This project ran shadow 2026-04-27→08-10 and flipped to **`live`** on 2026-08-24 — operator decision D2, 44 would-auto-merge / 1 disagreement; `config.json → hotl_gate.mode = "live"`. Step 3b is automated by `hotl-eval`, which appends the shadow-log line in BOTH modes.)
 3. **`off`** — gate disabled, human gate always runs. Equivalent to legacy behavior.
 
 ### Shadow log format
@@ -523,7 +524,7 @@ If the disagreement rate is higher, tighten the criteria (lower max_lines, add t
 
 ### Integration with Step 5 (The Pair Loop)
 
-Full integration is documented in `protocols/dispatch.md § Step 5`. Summary: after pre-verification passes, the CEO evaluates HOTL criteria, writes a shadow log entry, and (in live mode with all criteria passing) skips the human gate and proceeds to merge.
+Full integration is documented in `protocols/dispatch.md § Step 5`. Summary: after pre-verification passes, the CEO runs `hotl-eval` (it evaluates the criteria and appends the shadow-log line in BOTH modes) and (in live mode — this project since 2026-08-24 — with all criteria passing) skips the human gate and proceeds to merge.
 
 ## Communication: Hive Mind + Mailboxes
 
@@ -605,9 +606,9 @@ Each pair writes to its own log. The CEO and other pairs can read it, but only t
 - Findings summaries
 - Questions for the human (`QUESTION FOR HUMAN:` prefix)
 - Learnings (`[LEARNING]` prefix)
-- Facts discovered (`[FACT]` prefix — the carrier ingests it into the memory DB and renders it in the hive's CARRIER-AUTO block)
-- Contradictions found (`[CONTRADICTION]` prefix — the carrier routes it to `store_contradiction`)
-- Re-confirmations (`[REINFORCED]` prefix — the carrier routes it to `reinforce_finding`, resetting the decay timer)
+- Facts discovered (`[FACT]` prefix — the carrier stores it as a medium-confidence fact in the memory DB and renders it in the hive's CARRIER-AUTO block)
+- Contradictions found (`[CONTRADICTION]` prose prefix — the carrier only SURFACES it to `.team11/_surfaced.md` as a `contradiction_note`; nothing is written structurally. To store it use `[OUTBOX:CONTRADICTION] {"claim_a": …, "source_a": …, "claim_b": …, "source_b": …}`)
+- Re-confirmations (`[REINFORCED]` prose prefix — surfaced only as a `reinforced_note`, no decay reset. To reset the decay timer use `[OUTBOX:REINFORCED] {"fact_id": <id>}`, which the carrier applies as `last_reinforced = now`)
 - Errors and debugging context
 
 ### Who Writes Where
@@ -696,7 +697,7 @@ If a gate is missing from the table above but the CEO is about to block for a de
 `/team11 stop` halts all running background agents. `/team11 stop pair <N>` stops just one pair.
 
 **How to stop background agents:**
-1. Find the pair's runtime agent id with `ListAgents` (or `/tasks`) — `TaskList` is hidden on Fable 5 / Opus 4.8+ since 2.1.233 (only with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, deliberately NOT set here); do not call it. (verified 2026-08-24, CC 2.1.241)
+1. Find the pair's runtime agent id with `ListAgents` (or `/tasks`) — `TaskList` is hidden on Fable 5 / Opus 4.8+ per the CC 2.1.233 release note (checklist F1; shown only with `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, which is not set here); do not call it. (verified 2026-08-24, CC 2.1.241)
 2. `TaskStop` with that agent id (it also accepts a name, but this build's `Agent` tool has no `name` parameter, so pairs have ids only)
 3. Repeat per pair
 

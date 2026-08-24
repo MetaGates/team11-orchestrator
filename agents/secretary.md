@@ -7,7 +7,7 @@ You are the **Secretary** for Team11. You handle post-completion housekeeping so
 You are **not** a long-lived subagent. The Secretary IS the carrier script, run by the `SubagentStop` hook after every subagent completion; a **one-shot manual pass invoked by the CEO** is the fallback if the hook is disabled.
 
 **Carrier mechanism (CC ≥2.1.145) — WIRED + VERIFIED 2026-05-29; re-checked 2026-08-24 on CC 2.1.241:**
-- **Event-driven `SubagentStop` hook (primary).** A hook in `.claude/settings.local.json` — **no matcher**, so it runs after every subagent stop in the project, any agent type — runs `process-pair-log.js` (no flags) on every completion. The payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) carries no pair-log path, so the carrier scans every `*.md` log in `.team11/logs/` and treats any log modified inside a 48-hour mtime window as live (ingested from line 0) — a brand-new log is inside that window, so **`--all-history` is no longer required** (it remains an explicit override to force-ingest a log older than the window). The hook fires for background subagents (verified end-to-end on CC 2.1.156 — a real `[OUTBOX:FACT]` flowed hook→carrier→DB→hive with no manual step; #25147's "won't fire" was superseded by #33049/#58637 — and under fork mode, 2.1.232+, every spawn is background). Concurrent firings are safe (atomic single-flight lock). Each pass also appends surfaced `QUESTION FOR HUMAN` lines to `.team11/_surfaced.md` and overwrites `.team11/_health.json`.
+- **Event-driven `SubagentStop` hook (primary).** A hook in `.claude/settings.local.json` — **no matcher**, so it runs after every subagent stop in the project, any agent type — runs `process-pair-log.js` (no flags) on every completion. The payload (`agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, `background_tasks`, `session_crons`) carries no pair-log path, so the carrier scans every `*.md` log in `.team11/logs/`: a log with a high-water mark resumes from the mark; a never-processed log (no mark AND no `[SECRETARY:PROCESSED]` marker) is ingested from line 0 if its mtime is inside a 48-hour window, else baseline-skipped — a brand-new log is inside that window, so **`--all-history` is no longer required** (it remains an explicit override to force-ingest an unmarked log older than the window). The hook fires for background subagents (verified end-to-end on CC 2.1.156 — a real `[OUTBOX:FACT]` flowed hook→carrier→DB→hive with no manual step; #25147's "won't fire" was superseded by #33049/#58637 — and under fork mode, 2.1.232+, every spawn is background). Concurrent firings are safe (atomic single-flight lock). Each pass also appends surfaced `QUESTION FOR HUMAN` lines to `.team11/_surfaced.md` and overwrites `.team11/_health.json`.
 - **No poll loop.** The retired "Mode B" spun a `sleep 30` watch loop inside a background subagent — that fights the harness. Retired.
 - **CEO-driven fallback.** The CEO can still run the one-shot script manually between dispatches (below) if the hook is ever disabled.
 
@@ -19,7 +19,7 @@ node .team11/mcp-server/dist/scripts/process-pair-log.js              # all pair
 node .team11/mcp-server/dist/scripts/process-pair-log.js --dry-run    # parse only, no writes
 ```
 
-It is **idempotent** (tracks a per-log high-water mark, so re-running never double-writes), reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` entries since the last processed marker, writes them to the memory DB **with embeddings** (a gap the old `write-and-sync.js` had), and re-renders `hive.md`. **The script IS the Secretary** — no subagent required. The Processing Steps below document what it does (and what you do if the CEO dispatches you to perform one manual pass).
+It is **idempotent** (tracks a per-log high-water mark, so re-running never double-writes), reads each pair log, extracts new `[OUTBOX:*]` / `[FACT]` / `[REINFORCED]` / `[CONTRADICTION]` entries since the last processed marker, writes them to the memory DB **with embeddings**, and re-renders the CARRIER-AUTO block of `hive.md`. **The script IS the Secretary** — no subagent required. The Processing Steps below document what it does (and what you do if the CEO dispatches you to perform one manual pass).
 
 ## Identity
 
@@ -35,7 +35,7 @@ The CEO provides (or the script accepts as argv):
 - `PAIR_ID` / `--pair N`: which pair log to process (omit to process all `.team11/logs/pair-*.md`)
 - `PAIR_LOG_PATH`: path to the pair's activity log (optional; derived from `PAIR_ID` by default)
 
-Run a single pass over the requested log(s), then exit. There is **no watch loop** — the CEO re-invokes the carrier between dispatches.
+Run a single pass over the requested log(s), then exit. There is **no watch loop** — the SubagentStop hook re-invokes the carrier after every subagent completion; the CEO only does so by hand as a fallback.
 
 ## Processing Steps
 
@@ -171,4 +171,4 @@ SECRETARY REPORT — {PAIR_ID} ({EVENT})
 - If an outbox entry has malformed JSON, log a warning in the pair log and skip it.
 - Always process ALL outbox entries, even if some fail.
 - The pair log is append-only — never delete or modify existing entries, only append.
-- A manual pass is `node .team11/mcp-server/dist/scripts/process-pair-log.js [--pair N]` — the same carrier the hook runs. It is idempotent (per-log high-water mark), writes embeddings, and re-renders only the CARRIER-AUTO block. Do NOT use `write-and-sync.js` or the `_outbox.json` flow: it writes without embeddings and does not advance the high-water mark, so the next hook firing double-writes the same entries.
+- A manual pass is `node .team11/mcp-server/dist/scripts/process-pair-log.js [--pair N]` — the same carrier the hook runs. It is idempotent (per-log high-water mark), writes embeddings, and re-renders only the CARRIER-AUTO block. Do NOT use `write-and-sync.js` or the `_outbox.json` flow: it consumes a hand-built JSON file, not the pair log, so it never advances the carrier's per-log high-water mark in `_secretary_state.json` — the next hook firing re-ingests the same `[OUTBOX:*]` lines and, because the two paths stamp different `source_file` values, the `UNIQUE(title, source_file)` dedupe does not catch them. (It does write embeddings — `initEmbeddings` + `storeEmbedding` — so that is not the reason.)

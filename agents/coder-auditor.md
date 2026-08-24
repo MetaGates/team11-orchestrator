@@ -588,9 +588,9 @@ This is where YOU communicate. Log everything here:
 - Reinforced: `[YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [REINFORCED] [fact ID from hive.md that was re-confirmed]`
 
 **When to use these prefixes:**
-- When you discover a non-obvious fact during your work, log it with `[FACT]` prefix. The CEO will promote it to hive.md Discovered Facts.
-- If your finding contradicts an existing hive.md Discovered Fact or Decision, log it with `[CONTRADICTION]` prefix.
-- If you re-confirm a fact already in the hive mind, note it with `[REINFORCED]` prefix. This resets the fact's confidence decay timer.
+- When you discover a non-obvious fact during your work, log it with `[FACT]` prefix. The carrier ingests it into the memory DB and renders it in the hive's CARRIER-AUTO block.
+- If your finding contradicts an existing hive.md Discovered Fact or Decision, log it with `[CONTRADICTION]` prefix — the carrier only surfaces that prose line; to open a contradiction row write the JSON form `[OUTBOX:CONTRADICTION] {...}` (Core Loop step 8).
+- If you re-confirm a fact already in the hive mind, note it with `[REINFORCED]` prefix. That prose line is only surfaced by the carrier; to actually reset the fact's decay timer write `[OUTBOX:REINFORCED] {"fact_id": <id>}`.
 
 ### Who Writes Where
 | File | You | CEO |
@@ -635,7 +635,7 @@ When dispatched in swarm-debug mode (your dispatch will say `MODE: swarm-debug`)
 
 - Built-in tools: Read, Write, Edit, Grep, Glob, Bash, ToolSearch (loads deferred schemas — deferred MCP tools cost only their names until loaded), Skill, Artifact, Monitor (verified 2026-08-24, CC 2.1.241)
 - WebSearch, WebFetch (for research)
-- SendMessage / ListAgents — you run as a background subagent. `SendMessage({to: "main", message: ...})` reaches the CEO mid-task; siblings are addressed by their runtime agent id (NOT `{AGENT_ID}`, which is only your Team11 label, and NOT by name — this build's `Agent` tool has no `name` parameter). The receiver sees `from="claude"`, so start every message body with `[{PAIR_ID}/{AGENT_ID} id:<your agent id>]`. If the CEO messages you after you finished, you auto-resume with your transcript intact.
+- SendMessage — you run as a background subagent (`ListAgents` is NOT exposed to background subagents in this build — probed 2026-08-24 from inside a pair; the CEO supplies any partner agent id in your dispatch prompt, plan §H ID hand-off). `SendMessage({to: "main", message: ...})` reaches the CEO mid-task; siblings are addressed by the runtime agent id the CEO handed you (NOT `{AGENT_ID}`, which is only your Team11 label, and NOT by name — this build's `Agent` tool has no `name` parameter). The receiver sees `from="claude"`, so start every message body with `[{PAIR_ID}/{AGENT_ID} id:<your agent id>]`. If the CEO messages you after you finished, you auto-resume with your transcript intact.
 - NOT available to you — never call them: AskUserQuestion, Workflow (only the CEO's main conversation can launch one — ask the CEO for a fan-out), ScheduleWakeup, TaskOutput, TaskList/TaskCreate/TaskGet/TaskUpdate (hidden on Fable 5 since 2.1.233), TeamCreate/TeamDelete (removed in 2.1.178).
 - EnterWorktree exists but is FORBIDDEN — it creates a throwaway `.claude/worktrees/agent-*` worktree (see `protocols/worktrees.md`); work in your permanent pool worktree.
 - Agent tool exists but do not spawn — every spawn is background by default (fork mode, 2.1.232+) and a `subagent_type: "fork"` inherits your whole context; you ARE the worker.
@@ -711,7 +711,7 @@ Before signaling DONE on your final round, write a pheromone summary to your pai
 ```
 [YYYY-MM-DD HH:MM] [{PAIR_ID}/{AGENT_ID}] [PHEROMONE] Task: [task name] | Difficulty: [LOW|MEDIUM|HIGH] | Files: [count] | Duration: [estimated minutes] | Gotchas: [brief list of non-obvious issues encountered]
 ```
-The CEO uses this to populate the hive mind's Pheromone Trails section, helping future pairs estimate difficulty and avoid known pitfalls.
+This prose line is the human-readable summary; the `[OUTBOX:PHEROMONE]` JSON entry (Core Loop step 8) is what the carrier ingests into the DB and renders in the hive's CARRIER-AUTO Pheromone Trails, helping future pairs estimate difficulty and avoid known pitfalls.
 
 ### Learnings → Proposals
 

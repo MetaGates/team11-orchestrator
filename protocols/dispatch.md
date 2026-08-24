@@ -152,7 +152,7 @@ For each pair N:
 
 Each pair is launched using the `Agent` tool with:
 - `subagent_type: "team11-coder-auditor"` — the registered subagent stub at `.claude/agents/team11-coder-auditor.md` delegates to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`. The CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it.
-- Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant in this build (verified 2026-08-24, CC 2.1.241) and may leave the schema. Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by the agent id the Agent tool returns (`ListAgents`).
+- Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant (checklist F7; CEO-side schema not re-inspected 2026-08-24 — the subagent-side `Agent` schema already omits it). Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by the agent id the Agent tool returns (`ListAgents`).
 - `model` from `config.model_routing[role]` is a record of intent only (see Model Routing in main SKILL.md): on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides any `model` param or frontmatter value, so every pair runs on Fable 5 (which is also what the config records). To change routing, change/unset the env var — editing config.json alone does nothing.
 - **NEVER pass `isolation: "worktree"`** — it spawns an uncleaned throwaway worktree that accumulates (see **Worktree Hygiene** in `protocols/worktrees.md`). Agents work directly in their permanent **pool** worktree directory.
 
@@ -316,8 +316,7 @@ The hive mind still gets updated per-file (so other pairs see what's being touch
    - Log results in pair log: "[CEO] Pre-verification: ruff-check ✓, mypy ✓ (non-blocking), frontend-lint ✓"
 
 3b. HOTL GATE EVALUATION (see HOTL Gate section in main SKILL):
-    - Evaluate auto-merge criteria against the audit
-    - Write shadow log entry to .team11/findings/hotl-shadow.jsonl
+    - Run `hotl-eval` (`node .team11/mcp-server/dist/scripts/hotl-eval.js --pair <id> --round <n> --findings <path> --worktree <path> --preverif pass|fail`): it evaluates the auto-merge criteria against the audit and appends the shadow-log line to .team11/findings/hotl-shadow.jsonl in BOTH modes (step 3b automated 2026-08-24; mode is `live` on this project per config.json)
     - If mode=live AND all criteria pass → SKIP step 4, proceed to step 6
     - Otherwise continue to step 4
 
