@@ -19,6 +19,7 @@ const sourceFiles = [
   'src/embeddings.ts',
   'src/decay.ts',
   'src/sync.ts',
+  'src/log-derive.ts',
   'src/tools/index.ts',
   'src/tools/recall.ts',
   'src/tools/store.ts',
@@ -35,6 +36,8 @@ const sourceFiles = [
   'src/scripts/process-pair-log.ts',
   'src/scripts/write-and-sync.ts',
   'src/scripts/consolidate-memory.ts',
+  'src/scripts/repair-findings.ts',
+  'src/scripts/hotl-eval.ts',
 ];
 
 // Fail loudly if the manifest drifts from the live tree in EITHER direction —

@@ -137,11 +137,33 @@ export function registerPheromoneTools(
           )
           .all(...params, limit);
       } else if (task_keywords) {
-        results = db
-          .prepare(
-            `SELECT * FROM pheromones WHERE task LIKE ? ORDER BY created_at DESC LIMIT ?`,
-          )
-          .all(`%${task_keywords}%`, limit);
+        // Tokenised OR-search (2026-08-24, audit finding A2.9): the previous
+        // single `task LIKE '%<whole phrase>%'` returned 0 rows for ANY multi-
+        // word query — which is exactly what the CEO's mandatory Step-1 call
+        // sends. Split on whitespace, drop tokens <3 chars, OR the rest, rank
+        // by how many tokens hit, then by recency. A query that leaves no
+        // usable token falls back to the whole-phrase LIKE (old behaviour).
+        const tokens = tokenizeTaskKeywords(task_keywords);
+        if (tokens.length === 0) {
+          results = db
+            .prepare(
+              `SELECT * FROM pheromones WHERE task LIKE ? ORDER BY created_at DESC LIMIT ?`,
+            )
+            .all(`%${task_keywords}%`, limit);
+        } else {
+          const patterns = tokens.map((t) => `%${escapeLike(t)}%`);
+          const hit = `(CASE WHEN task LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END)`;
+          const where = patterns.map(() => `task LIKE ? ESCAPE '\\'`).join(" OR ");
+          results = db
+            .prepare(
+              `SELECT *, (${patterns.map(() => hit).join(" + ")}) AS match_count
+                 FROM pheromones
+                WHERE ${where}
+                ORDER BY match_count DESC, created_at DESC
+                LIMIT ?`,
+            )
+            .all(...patterns, ...patterns, limit);
+        }
       } else {
         results = db
           .prepare(
@@ -170,6 +192,30 @@ export function registerPheromoneTools(
       };
     },
   );
+}
+
+/**
+ * Whitespace tokens with edge punctuation stripped, tokens shorter than 3
+ * chars dropped, deduped case-insensitively (SQLite LIKE is already ASCII
+ * case-insensitive, so the original casing is kept for the pattern).
+ */
+function tokenizeTaskKeywords(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(/\s+/)) {
+    const t = raw.replace(/^["'`(),;:]+|["'`(),;:]+$/g, "");
+    if (t.length < 3) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+}
+
+/** Escape LIKE metacharacters so a token containing `%` or `_` matches literally. */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
 function safeJsonParse(str: string | null, fallback: any): any {

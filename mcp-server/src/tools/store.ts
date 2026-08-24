@@ -31,7 +31,13 @@ async function storeEmbedding(db: Database.Database, findingId: number | bigint,
   // missing vector. better-sqlite3 transactions are synchronous, and the only
   // async step (embed) already completed above, so this wraps cleanly.
   const writeBoth = db.transaction((blob: Buffer, hash: string) => {
-    db.prepare(`INSERT OR REPLACE INTO findings_vec (finding_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(id, blob);
+    // sqlite-vec's vec0 virtual table does NOT honour OR REPLACE: re-embedding
+    // an existing finding_id raised "UNIQUE constraint failed on findings_vec
+    // primary key" (hit by scripts/repair-findings.ts on 2026-08-24; the
+    // carrier only ever embeds brand-new rows, which masked it). Delete-then-
+    // insert inside this same transaction is the upsert vec0 supports.
+    db.prepare(`DELETE FROM findings_vec WHERE finding_id = CAST(? AS INTEGER)`).run(id);
+    db.prepare(`INSERT INTO findings_vec (finding_id, embedding) VALUES (CAST(? AS INTEGER), ?)`).run(id, blob);
     db.prepare(`INSERT OR REPLACE INTO embedding_cache (finding_id, content_hash, embedding) VALUES (?, ?, ?)`).run(id, hash, blob);
   });
   writeBoth(vectorBlob, contentHash);

@@ -8,9 +8,10 @@
  * a ONE-SHOT, idempotent processor: it is NOT a poll/sleep loop.
  *
  * Trigger models (it is correct under BOTH):
- *   1. Event-driven SubagentStop hook (WIRED + VERIFIED 2026-05-29): a
- *      `.claude/settings.local.json` hook on matcher "team11-coder-auditor" runs
- *      this on every pair completion. The hook passes only the project root on
+ *   1. Event-driven SubagentStop hook (WIRED + VERIFIED 2026-05-29; the agent-
+ *      type matcher was REMOVED 2026-08-24 so it fires on EVERY SubagentStop): a
+ *      `.claude/settings.local.json` hook runs this on every subagent
+ *      completion. The hook passes only the project root on
  *      stdin (no pair identity), so the default "scan all logs" behaviour is what
  *      it needs. It NO LONGER needs `--all-history`: a freshly-created (live) pair
  *      log is now recognised by its filesystem mtime (within
@@ -52,8 +53,19 @@
  *                      marker is treated as historical backlog and SKIPPED (a marker
  *                      is written at the current end so future entries are picked up).
  *                      Use this flag to force-ingest a stale/historical log on demand.
- *   --dry-run          Parse + report, but do not write to the DB, advance the
+ *                      With an EXPLICIT target (--log / --pair) it ALSO overrides a
+ *                      marker-less prior high-water mark (a log the scan-all hook
+ *                      baseline-skipped): `--log .team11/logs/espresso.md --all-history`
+ *                      ingests that log from line 0. Scan-all + --all-history never
+ *                      overrides a prior mark.
+ *   --dry-run         Parse + report, but do not write to the DB, advance the
  *                      high-water mark, or append markers.
+ *
+ * Side outputs (non-dry runs only, all under .team11/): `hive.md` auto-block
+ * re-render; `_surfaced.md` — APPEND of every QUESTION FOR HUMAN + prose-only
+ * [CONTRADICTION]/[REINFORCED] note with its source log (the stdout JSON is
+ * discarded by the hook, so this file is what the CEO actually reads);
+ * `_health.json` — OVERWRITE with a DB health snapshot + this run's totals.
  *
  * Exit code 0 on success (even with per-entry parse errors, which are reported).
  * Non-zero only on fatal setup errors (bad path, DB init failure).
@@ -76,6 +88,7 @@ import { initDb } from "../db.js";
 import { storeEmbedding } from "../tools/store.js";
 import { initEmbeddings } from "../embeddings.js";
 import { loadSyncConfig, initSync, forceSync, shutdownSync } from "../sync.js";
+import { deriveTitle, pairIdFromLogPath } from "../log-derive.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -195,11 +208,20 @@ function resolveLogPathSafe(projectRoot: string, candidate: string): string {
   return abs;
 }
 
-function discoverPairLogs(projectRoot: string): string[] {
+/**
+ * Every `*.md` FILE directly inside `.team11/logs/` — NOT only `pair-*.md`.
+ * Audit logs (`audit-*.md`) and ad-hoc lane logs (`espresso.md`, `P3.1.md`,
+ * `merchant-photos.md`, …) carry the same [OUTBOX:*]/[FACT]/[GOTCHA] markers
+ * and were silently never ingested while the filter was `startsWith("pair-")`
+ * (14 logs / 79 markers on 2026-08-24). Subdirectories and non-.md artifacts
+ * (.log/.txt output captures) are skipped.
+ */
+function discoverLogs(projectRoot: string): string[] {
   const logsDir = join(projectRoot, ".team11", "logs");
   if (!existsSync(logsDir)) return [];
-  return readdirSync(logsDir)
-    .filter((f) => f.startsWith("pair-") && f.endsWith(".md"))
+  return readdirSync(logsDir, { withFileTypes: true })
+    .filter((d) => d.isFile() && d.name.endsWith(".md"))
+    .map((d) => d.name)
     .sort()
     .map((f) => join(logsDir, f));
 }
@@ -397,6 +419,7 @@ function releaseLock(projectRoot: string): void {
 
 const OUTBOX_TYPE_BY_TAG: Record<string, string> = {
   FACT: "fact",
+  FINDING: "fact", // pairs sometimes emit [OUTBOX:FINDING]; store as a fact
   PHEROMONE: "pheromone",
   GOTCHA: "gotcha",
   CONTRADICTION: "contradiction",
@@ -421,11 +444,38 @@ interface ParsedLine {
 }
 
 /**
+ * A signal the carrier cannot store structurally (QUESTION FOR HUMAN, prose-
+ * only [CONTRADICTION]/[REINFORCED], structured reinforce with no id). Carried
+ * with its source log so `_surfaced.md` can say WHERE it came from; `line` is
+ * the legacy `kind: text[:max]` rendering that the stdout JSON report keeps
+ * emitting unchanged.
+ */
+interface SurfacedItem {
+  source: string;
+  kind: string;
+  text: string;
+  line: string;
+}
+
+function surfacedItem(entry: OutboxEntry, kind: string, text: string, max: number): SurfacedItem {
+  return {
+    source: String(entry.source_file ?? "?"),
+    kind,
+    text,
+    line: `${kind}: ${text.slice(0, max)}`,
+  };
+}
+
+/**
  * Extract structured entries from a slice of log lines.
  * `sourceRel` is the relative log path, stamped as source_file so the
  * findings UNIQUE(title, source_file) constraint dedupes across re-runs.
+ * `sourcePair` is the pair id derived from the log FILENAME (pair-occdiet.md →
+ * pair-occdiet, audit-harness-r1.md → audit-harness-r1), stamped as
+ * `source_pair` on every entry as the provenance FALLBACK — an explicit `pair`
+ * inside an [OUTBOX:*] JSON object still wins (it is spread AFTER the stamp).
  */
-function parseLines(lines: string[], sourceRel: string): {
+function parseLines(lines: string[], sourceRel: string, sourcePair: string | null): {
   parsed: ParsedLine[];
   parseErrors: number;
 } {
@@ -448,10 +498,19 @@ function parseLines(lines: string[], sourceRel: string): {
       }
       try {
         const obj = JSON.parse(ob[2]) as Record<string, unknown>;
-        parsed.push({ entry: { type, source_file: sourceRel, ...obj } });
+        parsed.push({ entry: { type, source_file: sourceRel, source_pair: sourcePair, ...obj } });
       } catch (err) {
-        console.error(`[process-pair-log] Malformed OUTBOX JSON, skipping: ${trimmed.slice(0, 120)}`, err);
-        parseErrors++;
+        // Most failures are unescaped backslashes (Windows paths, regex,
+        // LaTeX) inside JSON strings. Double any backslash that isn't the
+        // start of a valid JSON escape, then retry once before giving up.
+        try {
+          const repaired = ob[2].replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+          const obj = JSON.parse(repaired) as Record<string, unknown>;
+          parsed.push({ entry: { type, source_file: sourceRel, source_pair: sourcePair, ...obj } });
+        } catch {
+          console.error(`[process-pair-log] Malformed OUTBOX JSON, skipping: ${trimmed.slice(0, 120)}`, err);
+          parseErrors++;
+        }
       }
       continue;
     }
@@ -469,6 +528,7 @@ function parseLines(lines: string[], sourceRel: string): {
         entry: {
           type: "reinforced_note",
           source_file: sourceRel,
+          source_pair: sourcePair,
           content: reinforced[1].trim(),
         },
       });
@@ -480,6 +540,7 @@ function parseLines(lines: string[], sourceRel: string): {
         entry: {
           type: "contradiction_note",
           source_file: sourceRel,
+          source_pair: sourcePair,
           content: contradiction[1].trim(),
         },
       });
@@ -491,6 +552,7 @@ function parseLines(lines: string[], sourceRel: string): {
         entry: {
           type: "fact",
           source_file: sourceRel,
+          source_pair: sourcePair,
           title: deriveTitle(fact[1]),
           content: fact[1].trim(),
           confidence: "medium",
@@ -504,6 +566,7 @@ function parseLines(lines: string[], sourceRel: string): {
         entry: {
           type: "gotcha",
           source_file: sourceRel,
+          source_pair: sourcePair,
           title: deriveTitle(gotcha[1]),
           content: gotcha[1].trim(),
         },
@@ -513,7 +576,7 @@ function parseLines(lines: string[], sourceRel: string): {
     const question = QUESTION_RE.exec(trimmed);
     if (question) {
       parsed.push({
-        entry: { type: "question", source_file: sourceRel, content: trimmed },
+        entry: { type: "question", source_file: sourceRel, source_pair: sourcePair, content: trimmed },
       });
       continue;
     }
@@ -522,19 +585,14 @@ function parseLines(lines: string[], sourceRel: string): {
   return { parsed, parseErrors };
 }
 
-/** Short title from a free-text prose line (first sentence/clause, capped). */
-function deriveTitle(text: string): string {
-  const cleaned = text.trim().replace(/\s+/g, " ");
-  const cut = cleaned.split(/[.:—–-]/)[0].trim() || cleaned;
-  return cut.length > 80 ? cut.slice(0, 77) + "..." : cut;
-}
-
 // --- DB writes (reusing initDb + storeEmbedding) -------------------------
 
 interface DbHandle {
   // Minimal structural shape of the better-sqlite3 Database we rely on.
   prepare(sql: string): {
     run(...params: unknown[]): { lastInsertRowid: number | bigint };
+    all(...params: unknown[]): Record<string, unknown>[];
+    get(...params: unknown[]): Record<string, unknown> | undefined;
   };
   close(): void;
 }
@@ -549,7 +607,7 @@ interface DbHandle {
 async function writeEntry(
   db: DbHandle,
   entry: OutboxEntry,
-  surfaced: string[],
+  surfaced: SurfacedItem[],
 ): Promise<keyof WriteResults> {
   switch (entry.type) {
     case "fact": {
@@ -562,7 +620,7 @@ async function writeEntry(
           entry.title as string,
           entry.content as string,
           (entry.confidence as string) ?? "high",
-          (entry.pair as string) ?? null,
+          (entry.pair as string) ?? (entry.source_pair as string) ?? null,
           (entry.source_file as string) ?? null,
           entry.tags ? JSON.stringify(entry.tags) : null,
         );
@@ -576,7 +634,7 @@ async function writeEntry(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         entry.task as string,
-        (entry.pair as string) ?? null,
+        (entry.pair as string) ?? (entry.source_pair as string) ?? null,
         (entry.difficulty as string) ?? "MEDIUM",
         JSON.stringify((entry.files_touched as string[]) ?? []),
         JSON.stringify((entry.gotchas as string[]) ?? []),
@@ -601,7 +659,7 @@ async function writeEntry(
         .run(
           entry.title as string,
           content,
-          (entry.pair as string) ?? null,
+          (entry.pair as string) ?? (entry.source_pair as string) ?? null,
           (entry.source_file as string) ?? null,
           entry.tags ? JSON.stringify(entry.tags) : null,
         );
@@ -626,7 +684,7 @@ async function writeEntry(
       // Structured reinforce carries an explicit finding id (fact_id|finding_id).
       const id = (entry.finding_id as number) ?? (entry.fact_id as number);
       if (id == null) {
-        surfaced.push(`reinforced (no id): ${JSON.stringify(entry).slice(0, 120)}`);
+        surfaced.push(surfacedItem(entry, "reinforced (no id)", JSON.stringify(entry), 120));
         return "skipped";
       }
       db.prepare(
@@ -649,7 +707,7 @@ async function writeEntry(
     case "reinforced_note":
     case "contradiction_note":
     case "question": {
-      surfaced.push(`${entry.type}: ${String(entry.content).slice(0, 160)}`);
+      surfaced.push(surfacedItem(entry, entry.type, String(entry.content), 160));
       return entry.type === "question" ? "questions" : "skipped";
     }
 
@@ -666,10 +724,11 @@ async function processLog(
   projectRoot: string,
   logPath: string,
   state: SecretaryState,
-  opts: { allHistory: boolean; dryRun: boolean },
-  surfaced: string[],
+  opts: { allHistory: boolean; dryRun: boolean; explicitTarget: boolean },
+  surfaced: SurfacedItem[],
 ): Promise<LogResult> {
   const rel = relKey(projectRoot, logPath);
+  const sourcePair = pairIdFromLogPath(logPath);
   const results = emptyResults();
 
   if (!existsSync(logPath)) {
@@ -678,7 +737,19 @@ async function processLog(
 
   const allLines = readFileSync(logPath, "utf8").split(/\r?\n/);
   const total = allLines.length;
-  const prior = state[rel]?.lines ?? 0;
+  const hasMarker = allLines.some((l) => l.includes(PROCESSED_MARKER));
+  // --all-history on an EXPLICIT single target (--log / --pair) also overrides
+  // a marker-less prior high-water mark. Such a mark means the log was
+  // baseline-SKIPPED, never read: an actual ingest always appends a PROCESSED
+  // marker. The scan-all hook baselines every old non-pair log on its first
+  // pass (2026-08-24, once discoverLogs stopped filtering to pair-*), and
+  // without this the operator's later `--log <that log> --all-history` would
+  // report "up-to-date" and ingest nothing. Scan-all --all-history keeps its
+  // narrow meaning (a prior mark is honoured) so it can never mass-re-ingest
+  // the May-2026 baselined backlog.
+  const markedButNeverIngested = (state[rel]?.lines ?? 0) > 0 && !hasMarker;
+  const prior =
+    opts.allHistory && opts.explicitTarget && markedButNeverIngested ? 0 : (state[rel]?.lines ?? 0);
 
   // First-run backlog guard: a log we've never processed AND that has no
   // PROCESSED marker is AMBIGUOUS — it is either a freshly-created LIVE pair log
@@ -691,7 +762,6 @@ async function processLog(
   //     mark at the current end so future entries are picked up).
   // --all-history remains an explicit override that forces full ingest here
   // regardless of mtime (it short-circuits this whole guard via the condition).
-  const hasMarker = allLines.some((l) => l.includes(PROCESSED_MARKER));
   if (prior === 0 && !hasMarker && !opts.allHistory) {
     // mtimeMs via statSync. A stat failure (e.g. the file was deleted in the
     // race between existsSync above and here) is treated as "not recent" — the
@@ -728,7 +798,7 @@ async function processLog(
     return { log: rel, linesScanned: 0, fromLine, processed: true, reason: "up-to-date", results };
   }
 
-  const { parsed, parseErrors } = parseLines(slice, rel);
+  const { parsed, parseErrors } = parseLines(slice, rel, sourcePair);
   results.errors += parseErrors;
 
   if (opts.dryRun) {
@@ -778,7 +848,7 @@ async function processLog(
   return { log: rel, linesScanned: slice.length, fromLine, processed: true, results };
 }
 
-function tallyDry(entry: OutboxEntry, results: WriteResults, surfaced: string[]): void {
+function tallyDry(entry: OutboxEntry, results: WriteResults, surfaced: SurfacedItem[]): void {
   switch (entry.type) {
     case "fact": results.facts++; break;
     case "pheromone": results.pheromones++; break;
@@ -789,9 +859,9 @@ function tallyDry(entry: OutboxEntry, results: WriteResults, surfaced: string[])
       else results.reinforced++;
       break;
     case "release_files": results.released++; break;
-    case "question": results.questions++; surfaced.push(`question: ${String(entry.content).slice(0, 160)}`); break;
+    case "question": results.questions++; surfaced.push(surfacedItem(entry, "question", String(entry.content), 160)); break;
     case "reinforced_note":
-    case "contradiction_note": results.skipped++; surfaced.push(`${entry.type}: ${String(entry.content).slice(0, 160)}`); break;
+    case "contradiction_note": results.skipped++; surfaced.push(surfacedItem(entry, entry.type, String(entry.content), 160)); break;
     default: results.errors++;
   }
 }
@@ -836,7 +906,11 @@ function parseArgs(argv: string[]): CliArgs {
  * Decide which logs to process from CLI args. A positional arg is either the
  * project root (a directory / contains .team11) or a single log file.
  */
-function resolveTargets(args: CliArgs): { projectRoot: string; logs: string[] } {
+function resolveTargets(args: CliArgs): {
+  projectRoot: string;
+  logs: string[];
+  explicitTarget: boolean; // true for --log / --pair / positional .md (see processLog's --all-history rule)
+} {
   // A positional that points at a .md file is a single-log target; otherwise
   // it's the project root (matches the secretary.md hook command shape, which
   // passes ${CLAUDE_PROJECT_DIR}).
@@ -854,7 +928,7 @@ function resolveTargets(args: CliArgs): { projectRoot: string; logs: string[] } 
   const projectRoot = findProjectRoot(projectRootHint);
 
   if (singleLog) {
-    return { projectRoot, logs: [resolveLogPathSafe(projectRoot, singleLog)] };
+    return { projectRoot, logs: [resolveLogPathSafe(projectRoot, singleLog)], explicitTarget: true };
   }
   if (args.pair) {
     // ".team11" — plain segment, NOT an escape. The previous "\.team11" read as
@@ -862,17 +936,192 @@ function resolveTargets(args: CliArgs): { projectRoot: string; logs: string[] } 
     // the resolved path was unchanged but the source was misleading. Use the
     // posix separator-free segment and let join() insert the platform separator.
     const candidate = join(".team11", "logs", `pair-${args.pair}.md`);
-    return { projectRoot, logs: [resolveLogPathSafe(projectRoot, candidate)] };
+    return { projectRoot, logs: [resolveLogPathSafe(projectRoot, candidate)], explicitTarget: true };
   }
-  return { projectRoot, logs: discoverPairLogs(projectRoot) };
+  return { projectRoot, logs: discoverLogs(projectRoot), explicitTarget: false };
+}
+
+// --- surfaced questions + health snapshot ----------------------------------
+// The SubagentStop hook discards the carrier's stdout (`2>/dev/null || true`
+// and nobody reads the JSON), so a QUESTION FOR HUMAN that only reached the
+// stdout report was invisible to the CEO. `_surfaced.md` is append-only and
+// carries the source log; `_health.json` is a per-run snapshot for
+// `/team11 health` + the CEO's Monitor (decay is NOT run here — Phase 3).
+
+const SURFACED_HEADER =
+  "# Surfaced by the Secretary carrier\n\n" +
+  "QUESTION FOR HUMAN lines and prose-only [CONTRADICTION] / [REINFORCED] notes that the carrier " +
+  "could not store structurally. Appended (never rewritten) on every non-dry run that surfaced " +
+  "something; newest block at the bottom. Writer: `.team11/mcp-server/src/scripts/process-pair-log.ts`.\n";
+
+function appendSurfaced(projectRoot: string, surfaced: SurfacedItem[]): void {
+  if (surfaced.length === 0) return; // never litter an empty block
+  const p = join(projectRoot, ".team11", "_surfaced.md");
+  try {
+    const header = existsSync(p) ? "" : SURFACED_HEADER;
+    const block =
+      `\n## ${new Date().toISOString()} — ${surfaced.length} surfaced\n` +
+      surfaced.map((s) => `- \`${s.source}\` **${s.kind}** — ${oneLine(s.text, 2000)}`).join("\n") +
+      "\n";
+    appendFileSync(p, header + block);
+    console.error(`[process-pair-log] ${surfaced.length} surfaced item(s) appended to ${relKey(projectRoot, p)}`);
+  } catch (err) {
+    console.error("[process-pair-log] _surfaced.md append failed (non-fatal):", err);
+  }
+}
+
+function writeHealthSnapshot(
+  db: DbHandle,
+  projectRoot: string,
+  perRun: { logsProcessed: number; totals: WriteResults },
+): void {
+  try {
+    // Predicates mirror tools/health.ts (archived) and decay.ts (active set +
+    // the 0.5 STALE_THRESHOLD) so this file agrees with health_check/list_stale.
+    const row = db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM findings) AS findings_total,
+           (SELECT COUNT(*) FROM findings WHERE created_at >= datetime('now', '-7 days')) AS last_7d,
+           (SELECT COUNT(*) FROM contradictions WHERE status = 'OPEN') AS open_contradictions,
+           (SELECT COUNT(*) FROM findings
+              WHERE (superseded_by IS NULL OR superseded_by = 0)
+                AND COALESCE(confidence_score, 1.0) < 0.5) AS flagged_lt_50,
+           (SELECT COUNT(*) FROM findings WHERE superseded_by IS NOT NULL AND superseded_by != 0) AS archived,
+           (SELECT COUNT(*) FROM pheromones) AS pheromones`,
+      )
+      .get() as Record<string, number>;
+    const snapshot = { ts: new Date().toISOString(), ...row, per_run: perRun };
+    writeFileSync(join(projectRoot, ".team11", "_health.json"), JSON.stringify(snapshot, null, 2) + "\n");
+  } catch (err) {
+    console.error("[process-pair-log] _health.json write failed (non-fatal):", err);
+  }
+}
+
+// --- hive.md render ------------------------------------------------------
+// The carrier historically never re-rendered hive.md (only the memory DB), so
+// the human-readable hive drifted stale. This replaces ONLY the region between
+// the CARRIER-AUTO markers, so any CEO-curated content outside them is kept.
+const HIVE_AUTO_START = "<!-- CARRIER-AUTO:START -->";
+const HIVE_AUTO_END = "<!-- CARRIER-AUTO:END -->";
+
+function oneLine(s: unknown, max = 200): string {
+  const t = String(s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+/** Collapse any run of MORE than two consecutive blank lines down to two. */
+function collapseBlankRuns(s: string): string {
+  // "\n" then >=3 x (optional whitespace + "\n"): every unit ends in "\n", so a
+  // content line's leading indentation is never eaten.
+  return s.replace(/\n(?:[ \t]*\n){3,}/g, "\n\n\n");
+}
+
+/**
+ * Keep a `**Version:** N` line in the curated header (everything before the
+ * first "## " heading) equal to the auto-block version, so the file no longer
+ * advertises "Version: 2" over an auto block at v2000+.
+ */
+function syncHeaderVersion(s: string, version: number): string {
+  const firstH2 = s.search(/^## /m);
+  const cut = firstH2 === -1 ? s.length : firstH2;
+  const header = s.slice(0, cut).replace(/\*\*Version:\*\*\s*\d+/, `**Version:** ${version}`);
+  return header + s.slice(cut);
+}
+
+function renderHive(db: DbHandle, hivePath: string): void {
+  try {
+    const facts = db
+      .prepare(
+        `SELECT title, content FROM findings WHERE type='fact'
+         ORDER BY COALESCE(confidence_score, 1.0) DESC, id DESC LIMIT 30`,
+      )
+      .all() as Array<{ title: string; content: string }>;
+    const gotchas = db
+      .prepare(
+        `SELECT title, content FROM findings WHERE type='gotcha'
+         ORDER BY COALESCE(confidence_score, 1.0) DESC, id DESC LIMIT 30`,
+      )
+      .all() as Array<{ title: string; content: string }>;
+    const pheromones = db
+      .prepare(`SELECT task FROM pheromones ORDER BY id DESC LIMIT 15`)
+      .all() as Array<{ task: string }>;
+
+    let existing = "";
+    try {
+      existing = readFileSync(hivePath, "utf8");
+    } catch {
+      /* no existing hive */
+    }
+    // Bump the version off the PRIOR auto-block if one exists (so it advances
+    // monotonically), else off any curated header version, else start at 1.
+    let version = 1;
+    const priorStart = existing.indexOf(HIVE_AUTO_START);
+    const priorEnd = existing.indexOf(HIVE_AUTO_END);
+    const versionScope =
+      priorStart !== -1 && priorEnd !== -1 && priorEnd > priorStart
+        ? existing.slice(priorStart, priorEnd)
+        : existing;
+    const vm = versionScope.match(/\*\*Version:\*\*\s*(\d+)/);
+    if (vm) version = parseInt(vm[1], 10) + 1;
+    const now = new Date().toISOString().slice(0, 10);
+
+    const auto =
+      `${HIVE_AUTO_START}\n` +
+      `# Hive Mind (auto-rendered)\n` +
+      `**Last updated:** ${now}  ·  **Version:** ${version}  ·  **Type:** hive-mind\n` +
+      `> Auto-rendered by the Secretary carrier from the memory DB (top entries by ` +
+      `confidence/recency). Full recall via the team11-memory MCP ` +
+      `(recall_context / search_memory).\n\n` +
+      `## Discovered Facts (${facts.length})\n` +
+      (facts.map((f) => `- **${oneLine(f.title, 90)}** — ${oneLine(f.content)}`).join("\n") ||
+        "- (none)") +
+      `\n\n## Gotchas (${gotchas.length})\n` +
+      (gotchas.map((g) => `- **${oneLine(g.title, 90)}** — ${oneLine(g.content)}`).join("\n") ||
+        "- (none)") +
+      `\n\n## Pheromone Trails (${pheromones.length})\n` +
+      (pheromones.map((p) => `- ${oneLine(p.task, 160)}`).join("\n") || "- (none)") +
+      `\n${HIVE_AUTO_END}\n`;
+
+    // Everything OUTSIDE the auto block is CEO-curated and kept — normalised:
+    //   (a) the remainder after END used to start with the original "\n" and
+    //       was re-appended verbatim after an `auto` that already ends in "\n",
+    //       so EVERY render grew the file by one blank line (2,413 accumulated
+    //       by 2026-08-23) → trim it and emit exactly ONE trailing newline;
+    //   (b) any run of >2 blank lines outside the block collapses to 2 (this
+    //       retro-fixes the accumulated growth on the next render);
+    //   (c) a `**Version:**` line in the curated header tracks the auto-block
+    //       version instead of a frozen "Version: 2".
+    const start = existing.indexOf(HIVE_AUTO_START);
+    const end = existing.indexOf(HIVE_AUTO_END);
+    let out: string;
+    if (start !== -1 && end !== -1 && end > start) {
+      const head = syncHeaderVersion(collapseBlankRuns(existing.slice(0, start)), version);
+      const tail = collapseBlankRuns(existing.slice(end + HIVE_AUTO_END.length))
+        .replace(/^\s+/, "")
+        .trimEnd();
+      out = head + auto + (tail ? `\n${tail}\n` : "");
+    } else if (existing.trim()) {
+      out = `${syncHeaderVersion(collapseBlankRuns(existing), version).trimEnd()}\n\n${auto}`;
+    } else {
+      out = auto;
+    }
+    writeFileSync(hivePath, out);
+    console.error(
+      `[process-pair-log] hive.md re-rendered (v${version}): ${facts.length} facts, ${gotchas.length} gotchas, ${pheromones.length} pheromones`,
+    );
+  } catch (err) {
+    console.error("[process-pair-log] hive.md render failed (non-fatal):", err);
+  }
 }
 
 // --- main ----------------------------------------------------------------
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const { projectRoot, logs } = resolveTargets(args);
+  const { projectRoot, logs, explicitTarget } = resolveTargets(args);
   const dbPath = join(projectRoot, ".team11", "memory.db");
+  const opts = { allHistory: args.allHistory, dryRun: args.dryRun, explicitTarget };
 
   // 0. Single-flight lock (write path only). --dry-run is read-only: it never
   //    takes the lock, so it can never block a real run nor be blocked by one.
@@ -908,11 +1157,11 @@ async function main(): Promise<void> {
 
     // 3. Process each target log.
     const state = loadState(projectRoot);
-    const surfaced: string[] = [];
+    const surfaced: SurfacedItem[] = [];
     const perLog: LogResult[] = [];
     for (const logPath of logs) {
       try {
-        perLog.push(await processLog(db, projectRoot, logPath, state, args, surfaced));
+        perLog.push(await processLog(db, projectRoot, logPath, state, opts, surfaced));
       } catch (err) {
         console.error(`[process-pair-log] Failed on ${logPath}:`, err);
         perLog.push({
@@ -926,6 +1175,13 @@ async function main(): Promise<void> {
       }
     }
 
+    // 3b. Aggregate totals (used by the health snapshot AND the stdout report).
+    const totals = emptyResults();
+    for (const r of perLog) {
+      for (const k of Object.keys(totals) as (keyof WriteResults)[]) totals[k] += r.results[k];
+    }
+    const logsProcessed = perLog.filter((r) => r.processed).length;
+
     // 4. Persist state + push sync.
     if (!args.dryRun) {
       saveState(projectRoot, state);
@@ -933,20 +1189,23 @@ async function main(): Promise<void> {
         await forceSync();
         console.error("[process-pair-log] Turso sync pushed");
       }
+      // 4b. Re-render hive.md from the DB (auto-managed section; keeps the
+      //     human-readable hive current — the DB is authoritative).
+      renderHive(db, join(projectRoot, ".team11", "hive.md"));
+      // 4c. Surface questions where the CEO can see them + health snapshot.
+      appendSurfaced(projectRoot, surfaced);
+      writeHealthSnapshot(db, projectRoot, { logsProcessed, totals });
     }
 
-    // 5. Aggregate + report (stdout = machine-readable JSON; stderr = human log).
-    const totals = emptyResults();
-    for (const r of perLog) {
-      for (const k of Object.keys(totals) as (keyof WriteResults)[]) totals[k] += r.results[k];
-    }
+    // 5. Report (stdout = machine-readable JSON; stderr = human log). Shape is
+    //    a contract: `surfaced` stays a string[] in the legacy rendering.
     console.log(
       JSON.stringify({
         dryRun: args.dryRun,
         logsTargeted: logs.length,
-        logsProcessed: perLog.filter((r) => r.processed).length,
+        logsProcessed,
         totals,
-        surfaced, // QUESTION FOR HUMAN / prose contradictions/reinforces for CEO
+        surfaced: surfaced.map((s) => s.line), // QUESTION FOR HUMAN / prose contradictions/reinforces for CEO
         perLog,
       }),
     );
