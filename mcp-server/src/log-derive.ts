@@ -12,6 +12,15 @@ export const TITLE_MAX = 80;
  * "Pre", "cli") — fall back to the leading TITLE_MAX chars of the whole line.
  */
 export const TITLE_MIN_SEGMENT = 20;
+/**
+ * When the 80-char cap lands inside a code span / paren, cutting back before
+ * it must never leave less than this: backing off to the 20-char split floor
+ * turned "A **second** identical `ALTER TABLE …`" into "A **second** identical..."
+ * — a stem LESS informative than the title it replaced, and one that no repair
+ * pass would ever revisit (audit round 2). Below this floor the span/paren is
+ * closed after the "..." instead (see capTitle).
+ */
+export const CAP_BACKOFF_FLOOR = 40;
 
 /**
  * Sentence boundaries ONLY. The previous implementation split on the character
@@ -83,14 +92,16 @@ function neededClosers(s: string): string {
 
 /**
  * Cut back to just before the last opening backtick, then before the last
- * unmatched "(", each only while the result stays a usable title
- * (>= TITLE_MIN_SEGMENT); drop trailing separators the cut-back exposes.
+ * unmatched "(", each only while the result keeps at least CAP_BACKOFF_FLOOR
+ * chars (NOT the 20-char split floor — see the constant); drop trailing
+ * separators the cut-back exposes. When the cut-back is refused, capTitle
+ * closes the open span/paren after the "..." instead.
  */
 function capBeforeOpenSpan(slice: string): string {
   let s = slice;
   if ((s.match(/`/g) ?? []).length % 2 === 1) {
     const back = s.slice(0, s.lastIndexOf("`")).trimEnd();
-    if (back.length >= TITLE_MIN_SEGMENT) s = back;
+    if (back.length >= CAP_BACKOFF_FLOOR) s = back;
   }
   let depth = 0;
   let unmatchedOpen = -1;
@@ -106,7 +117,7 @@ function capBeforeOpenSpan(slice: string): string {
   }
   if (unmatchedOpen > 0) {
     const back = s.slice(0, unmatchedOpen).trimEnd();
-    if (back.length >= TITLE_MIN_SEGMENT) s = back;
+    if (back.length >= CAP_BACKOFF_FLOOR) s = back;
   }
   return s.replace(/[\s,;:]+$/, "");
 }
