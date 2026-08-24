@@ -38,6 +38,7 @@ const sourceFiles = [
   'src/scripts/consolidate-memory.ts',
   'src/scripts/repair-findings.ts',
   'src/scripts/hotl-eval.ts',
+  'src/scripts/auditor-bash-guard.ts',
 ];
 
 // Fail loudly if the manifest drifts from the live tree in EITHER direction —
