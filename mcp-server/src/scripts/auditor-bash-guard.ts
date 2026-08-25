@@ -197,6 +197,24 @@ if (stdinFed && WRITE_MARKERS.test(scan)) {
 }
 
 // ---------------------------------------------------------------------------
+// F11: the same for the `-c`/`-e`/--eval/-Command FLAG path. The per-segment
+// eval check below splits on `; && || |`, so a marker after an internal `;`
+// inside the quoted payload (`python3 -c "import os; os.remove('x')"`) is cut
+// off its head and orphaned. Mirror the stdin gate: when an interpreter is
+// invoked with an eval flag anywhere in the command, scan the WHOLE (heredoc-
+// stripped) command for markers. The per-segment pass below is kept too. A
+// read-only payload that merely MENTIONS a marker word would false-positive —
+// acceptable per the guard's conservative posture (the auditor asks the CEO).
+// ---------------------------------------------------------------------------
+const flagEval = new RegExp(
+  "\\b" + EVAL_HEAD_ALT + "(?:\\.exe)?(?:\\s+-\\S+)*\\s+(?:-c|-e|--eval|-Command)(?:\\s|$)",
+  "i",
+).test(scan);
+if (flagEval && WRITE_MARKERS.test(scan)) {
+  block("interpreter -c/-e/--eval payload contains write/exec markers (F11: scanned over the whole command, defeating the internal-`;` split; read-only evals pass)");
+}
+
+// ---------------------------------------------------------------------------
 // 1. Flat deny rules — mutating commands, blocked outright. Run against BOTH
 //    the heredoc-stripped command and its git-normalized twin (normalization
 //    can only remove text, so scanning both misses nothing).
