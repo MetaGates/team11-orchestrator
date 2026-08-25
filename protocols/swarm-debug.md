@@ -63,7 +63,7 @@ HIVE MIND: [current state including other pairs' early findings]
 
 SWARM RULES:
 1. Read the hive mind's Discovered Facts before starting — another pair may have already found a clue
-2. Write findings to your pair log immediately as you discover them (use [SWARM-FINDING] prefix)
+2. Write findings to your pair log immediately as you discover them (use [SWARM-FINDING] prefix) AND push each one to `main` as a SendMessage the moment it lands — the CEO watches convergence off the messages; the log line is the record
 3. Do NOT attempt to fix the bug. Investigate only. The fix comes after convergence.
 4. If you find a root cause, write it clearly with EVIDENCE (file paths, line numbers, reproduction)
 5. If another pair's finding changes your hypothesis, note it and adjust
@@ -72,7 +72,7 @@ SWARM RULES:
 
 ### Convergence
 
-The CEO monitors pair logs in real time with the `Monitor` tool (e.g. a persistent `tail -f .team11/logs/pair-N.md` filtered on `[SWARM-FINDING]` — it streams stdout lines as events; CC 2.1.241) and instructs each pair to `SendMessage` `main` when it writes a root-cause finding; the SubagentStop hook fires when a pair finishes its time-box (do not poll `TaskList` — hidden on Fable 5). As findings come in:
+Swarm pairs are named agents (the Step 4 naming convention applies), and every `[SWARM-FINDING]` is PUSHED to `main` as a `SendMessage` the moment it is logged — delivered mid-turn (probed 2026-08-24/25, CC 2.1.241), so the CEO watches convergence live off the messages. The session's persistent `Monitor` on `.team11/logs/*.md` (dispatch.md Step 0b) is the fallback net for anything that doesn't message; the SubagentStop hook fires when a pair finishes its time-box (do not poll `TaskList` — hidden on Fable 5). As findings come in:
 
 1. **CEO reads each pair's `[SWARM-FINDING]` entries** from their pair logs
 2. **CEO records each root-cause finding in the hive narrative** with the source pair noted; the carrier ingests the pair's `[SWARM-FINDING]`/`[FACT]` lines into the DB and renders them in the CARRIER-AUTO block

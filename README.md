@@ -27,21 +27,33 @@ You (human)
   background  background                    (idle)
   worktree    worktree        ← only dispatched if needed
 
-Each pair: 2 identical agents that alternate coding and auditing.
+Each pair: a coder + an ENFORCED read-only auditor, messaging each other by name.
 All run in background. You keep working. They surface findings to you.
 
 ```
 
-## What's New — 2026-04-22 Modernization
+## What's New — 2026-08-24/25 Communication Rewire (P0–P2)
 
-Team11 was substantively upgraded on 2026-04-22. Key additions:
+Team11 was re-verified against Claude Code 2.1.241 and rebuilt on the runtime's proven messaging model (plan: `.team11/findings/team11-audit-and-modernization-plan-2026-08-23.md` §C/§H/§I; every mechanism below live-probed 2026-08-24/25):
+
+- **Messaging pairs.** A pair is now two persistent NAMED agents (`<pair>-coder`, `<pair>-auditor`) spawned up front — the `Agent` tool accepts `name:`, and the name is the `SendMessage`/`TaskStop` address. They message each other and `main` by name (delivered mid-turn); a completed agent auto-resumes with its full transcript when messaged, so an audit round is a MESSAGE, not a re-dispatch (the P1 lane ran 4 rounds with zero re-dispatches). Pairs push DONE / QUESTION / BLOCKED / CONFLICT to `main` — the CEO stops polling logs (one persistent `Monitor` remains as the fallback net for non-messaging agents). Cross-session `SendMessage` + `notify_when_idle` work CEO-to-CEO on native Windows (since CC 2.1.239).
+- **Enforced auditor.** The auditor runs a dedicated `team11-auditor` agent definition: `disallowedTools` denies Edit/Write/NotebookEdit and a `PreToolUse` guard denies mutating Bash. Read-only is a tripwire now, not an honor system (certified through four adversarial guard rounds, pair-t11defs 2026-08-24/25). Trivial fixes are MESSAGED to the coder, never edited by the auditor — nobody reviews their own edit, held by construction.
+- **Per-agent memory.** Agent definitions carry `memory: project` — `.claude/agent-memory/<agent>/MEMORY.md` is injected into that agent's system prompt on every spawn (seeded with the project's top gotchas; carrier regeneration of the index is a P3 item).
+- **Carrier v2 (P0 hygiene).** The carrier scans every `*.md` log (not just `pair-*`), stamps `source_pair` provenance, derives sane titles, runs decay on every pass, and writes `.team11/_surfaced.md` (questions) + `.team11/_health.json`; its SubagentStop hook fires matcher-less on every subagent stop.
+- **HOTL live.** The human-on-the-loop gate flipped from `shadow` to `live` on 2026-08-24 (44 would-auto-merge / 1 disagreement over 3.5 months of shadow — operator decision D2). `hotl-eval` automates the shadow-log line in both modes; in live mode a fully-passing audit merges without a human prompt (risk-file diffs always gate).
+- **Checkpoints slimmed** to `{pair, phase, commit_sha, next_action}` — cross-session crash recovery only; in-session resume is the transcript.
+- **Communication is three layers:** messages = the ALARM, logs = the RECORD, memory (DB + per-agent MEMORY.md) = the KNOWLEDGE. A message is never the record.
+
+## Previous — 2026-04-22 Modernization
+
+Team11 was substantively upgraded on 2026-04-22 (kept as history; superseded where the 2026-08-24/25 rewire says otherwise). Key additions:
 
 - **`subagent_type` dispatch.** The CEO now passes `subagent_type: "team11-coder-auditor"` to the Agent tool instead of pasting the agent prompt inline. Registered stubs in `.claude/agents/` delegate to the canonical skill files. Same for `team11-researcher` and `team11-secretary`.
 - **Prefix-caching dispatch template.** Static content (project prompt, knowledge, CLAUDE.md) is ordered FIRST, dynamic content (hive, task, pair identity) LAST. Claude Code's automatic prefix cache can reuse the static prefix, but (verified 2026-08-24, CC 2.1.241) **only across dispatches that share the same cwd, model and effort, within a 5-minute window** — subagents always get the 5-minute TTL, even on a subscription. The ordering pays off for back-to-back dispatches from the same cwd (the sequential-launch loop, a round-2 re-dispatch within 5 min); do not budget on a discount across dispatches minutes apart or from different cwds.
 - **Project prompt + knowledge topics.** Every project that uses Team11 should have `.team11/project-prompt.md` (index, always loaded) + `.team11/knowledge/<topic>.md` (loaded by CEO when relevant). Contains project-specific gotchas, patterns, conventions. Stops agents from rediscovering the same traps.
 - **`AskUserQuestion` human gates.** Every human decision point (findings, merge, destructive action, swarm-debug entry, standdown, etc.) uses structured multi-choice via `AskUserQuestion`. Voice-input friendly.
 - **Model routing.** `.team11/config.json → model_routing` records the per-role model the CEO passes as the Agent tool's `model` param (currently `fable` for every role, operator directive 2026-08-21). It is NOT the top of the resolution chain (verified 2026-08-24, CC 2.1.241): `CLAUDE_CODE_SUBAGENT_MODEL` (set on this machine to `claude-fable-5`) overrides the Agent-tool param, which overrides agent-frontmatter `model`, which overrides the main model. To actually change what a subagent runs on, change (or unset) the env var first, then the config. Never hardcode models in SKILL.md.
-- **HOTL (Human-on-the-Loop) gate.** `.team11/config.json → hotl_gate` with shadow mode by default for a new project (food-aggro flipped to `live` on 2026-08-24 after 44 would-auto-merge / 1 disagreement — operator decision D2; step 3b is automated by `hotl-eval`, which appends the shadow-log line in both modes). Auto-merge criteria: 0 critical/major-security/major findings, diff-size caps, pre-verification pass, no risk-list files touched. Shadow mode logs hypothetical decisions to `.team11/findings/hotl-shadow.jsonl` for agreement analysis before promotion to `live`.
+- **HOTL (Human-on-the-Loop) gate.** `.team11/config.json → hotl_gate` with shadow mode by default for a new project (food-aggro flipped to `live` on 2026-08-24 after 44 would-auto-merge / 1 disagreement — operator decision D2; the HOTL evaluation step — now pair-loop step 4b — is automated by `hotl-eval`, which appends the shadow-log line in both modes). Auto-merge criteria: 0 critical/major-security/major findings, diff-size caps, pre-verification pass, no risk-list files touched. Shadow mode logs hypothetical decisions to `.team11/findings/hotl-shadow.jsonl` for agreement analysis before promotion to `live`.
 - **Procedural pheromones.** CEO calls `mcp__team11-memory__get_pheromones` before deciding pair count (mandatory, not aspirational). Returned gotchas inline into each pair's dispatch CONTEXT.
 - **Usage-weighted decay.** Memory DB decay has a 14-day grace period; access via `recall_context` / `search_memory` bumps `last_reinforced` automatically. Explicit `reinforce_finding` bumps confidence +20% (cap 1.0). See `.team11/mcp-server/src/decay.ts`.
 - **`/team11 health` command.** Prints memory DB stats + sync status + contradictions + stale entries. Surfaces rot before it bites.
@@ -73,40 +85,42 @@ Before dispatching, the CEO scans your project for MCP servers (Postgres, Redis,
 
 Each pair gets an isolated git worktree (a full copy of the repo). They can't interfere with each other or your main branch.
 
-Inside each pair, two coder-auditor agents take turns — there's no fixed "Alpha/Beta"; the role is **positional** (whoever last edited the code is the *coder*, the other is the *auditor*):
+Inside each pair, two named agents split the work (P2 rewire, 2026-08-25): the coder (`<pair>-coder`) makes every edit; the auditor (`<pair>-auditor`, ENFORCED read-only) reviews every commit. Rounds are messages between them — not re-dispatches:
 
 ```
 Round 1:
-  The first agent CODES the feature
+  The CODER codes the feature
     → reads hive mind (what other pairs are doing)
     → reads source files (verify current state)
     → writes code
-    → updates hive mind ("I edited venues.py, affects VenueSchema")
+    → logs per-file in the pair log (the hive entry is the claim)
     → runs targeted tests
     → commits in worktree
+    → messages the auditor (sha, files, what to attack) + main ("DONE round 1")
 
-  The second agent AUDITS that code
+  The AUDITOR (parked since spawn) resumes on that message and audits
     → reads hive mind (cross-pair awareness)
     → reads the coder's changes
     → checks: correctness, security, patterns, tests, interface contracts
     → writes findings report
+    → messages the coder (fix list) + main (verdict + findings path)
 
     If trivial issue (typo, missing import):
-      The auditor FIXES it directly → roles swap for next round
+      The auditor MESSAGES the one-liner — it cannot edit (enforced read-only).
+      The coder applies it; the auditor reviews the application next round.
 
     If substantive issue (logic bug, security hole):
       The auditor FLAGS it → goes to you for review
 
 Round 2 (if needed):
-  Roles have swapped — the auditor last touched the code, so now
-  the other agent AUDITS that fix
-    → same criteria
-    → writes findings
+  A message, not a re-dispatch — the coder applies the fix list, commits,
+  messages the auditor again; both agents keep their full transcripts
+  (probed 2026-08-24/25: a completed agent auto-resumes when messaged).
 
-...continues until both agents agree the code is clean.
+...continues until the audit is clean.
 ```
 
-**The core rule: you never review your own edit.** This is why roles rotate — the agent who wrote the code is always checked by the other one.
+**The core rule: nobody reviews their own edit.** The enforced split holds it by construction — every edit is the coder's, every review is the auditor's.
 
 ### 5. Human Review Gate
 
@@ -209,9 +223,16 @@ Proposals must be:
   │   ├── SKILL.md                      # CEO orchestration manual
   │   ├── README.md                     # This document
   │   ├── agents/
-  │   │   └── coder-auditor.md          # Universal agent prompt (all 10 use this)
+  │   │   ├── coder-auditor.md          # Universal pair agent prompt (coder + enforced auditor both read it)
+  │   │   ├── researcher.md             # Research-only agent prompt
+  │   │   └── secretary.md              # Marker grammar reference (the carrier script IS the Secretary)
   │   └── protocols/
-  │       └── connected-hive.md         # GitHub API sync protocol for connected mode
+  │       ├── dispatch.md               # Steps 0-6, the message-driven pair loop, dispatch template
+  │       ├── worktrees.md              # Permanent worktree pool: setup / reset / teardown
+  │       ├── swarm-debug.md            # Swarm + competing-hypothesis debugging
+  │       ├── workflow-fanout.md        # Read-only Workflow fan-out engine
+  │       ├── session-log.md            # Standdown session log + proposals workflow
+  │       └── connected-hive.md         # GitHub API sync protocol for connected mode (dormant)
   └── commands/
       └── team11.md                     # /team11 slash command entry point
 
@@ -492,16 +513,30 @@ All agents currently run on Claude Fable 5 — set by `CLAUDE_CODE_SUBAGENT_MODE
 
 ## Communication Architecture
 
+Three layers (P2 rewire, 2026-08-25): **messages** = the alarm, **logs** = the record, **memory** = the knowledge.
+
 ```
-CEO writes → hive.md (read-only for pairs — shared awareness)
-CEO writes → inboxes/pair-N.md (targeted messages to specific pairs)
-CEO writes → memory.db (via team11-memory MCP tools after each merge)
-Pairs write → logs/pair-N.md (their own activity log)
-Pairs write → findings/pair-N-round-M.md (audit reports)
-Pairs write → proposals/*.md (knowledge proposals for human review)
+Messages (SendMessage by name, delivered mid-turn — transport, not files):
+  coder → auditor       (sha, files, what to attack)
+  auditor → coder       (fix list; trivial fixes are messaged, never edited)
+  pair → main           (DONE / QUESTION / BLOCKED / CONFLICT)
+  CEO → pair agent      (mid-round course corrections; durable copy → inbox file)
+  CEO ↔ peer sessions   (cross-session contracts; mirrored into hive.md — the hive is the record)
+
+Files (the record):
+  CEO writes → hive.md (narrative; the carrier renders the auto-block)
+  CEO writes → inboxes/pair-N.md (durable copy of CEO→pair instructions — kept through P2, decision D6)
+  CEO writes → memory.db (via team11-memory MCP tools after each merge)
+  Pairs write → logs/pair-N.md (their own activity log)
+  Auditor writes → findings/pair-N-round-M.md (audit reports)
+  Pairs write → proposals/*.md (knowledge proposals for human review)
+
+Memory (the knowledge):
+  memory.db — recall_context / pheromones / contradictions
+  .claude/agent-memory/<agent>/MEMORY.md — injected into the agent's system prompt at spawn
 ```
 
-No shared-write files between pairs. Zero concurrency issues.
+No shared-write files between pairs. Zero concurrency issues. A message is never the record — anything durable also lands in a file.
 
 ---
 
@@ -514,7 +549,7 @@ No shared-write files between pairs. Zero concurrency issues.
 | Agent crashes | `/team11 recover` reads `.team11/checkpoints/pair-N-checkpoint.json` to resume from last known phase, not from scratch |
 | Merge conflict | CEO surfaces both sides to you for resolution |
 | MCP unavailable | Agent falls back to built-in tools |
-| Human rejects | CEO sends the feedback to the pair's agent id via `SendMessage` (a completed subagent resumes with its transcript intact — `ListAgents` shows the id; probed 2026-08-24 on CC 2.1.241); the inbox file (`inboxes/pair-N.md`) remains the durable record. Full re-dispatch only if the agent is gone. |
+| Human rejects | CEO messages the pair's coder BY NAME (`<pair>-coder`) via `SendMessage` — a completed subagent resumes with its transcript intact (probed 2026-08-24/25, CC 2.1.241); the inbox file (`inboxes/pair-N.md`) remains the durable record. Full re-dispatch only if the transcript is gone (a new session). |
 | Agent stuck 3+ attempts | Switches to competing-hypothesis debugging |
 | Graceful stop | Agents commit WIP, write partial findings, then halt |
 
@@ -522,7 +557,7 @@ No shared-write files between pairs. Zero concurrency issues.
 
 Each pair writes a checkpoint file at key phases: `<project>/.team11/checkpoints/pair-N-checkpoint.json`.
 
-The checkpoint contains: current phase, task description, files modified, files remaining, context notes, and the last commit SHA. If a pair crashes, `/team11 recover` reads the checkpoint and resumes from the last known state rather than starting over. Checkpoint files are deleted after a successful merge.
+The checkpoint contains four fields — `{pair, phase, commit_sha, next_action}` (slimmed 2026-08-25): it exists for CROSS-SESSION crash recovery only; richer state lives in the pair log, and in-session resume is the agent's own transcript (a message brings a parked agent back with full context). If the session dies, `/team11 recover` re-dispatches from the checkpoint + pair log rather than starting over. Checkpoint files are deleted after a successful merge.
 
 ---
 

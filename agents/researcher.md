@@ -93,7 +93,7 @@ You do not have a pair (you're dispatched solo). Log progress to `.team11/logs/r
 - You found a claim that CONTRADICTS something in CLAUDE.md or memory
 - The research surfaces a decision point (e.g., "adopt X vs Y") that needs the human's input before you can continue
 
-Format: append to your log with `[QUESTION FOR HUMAN]` prefix AND `SendMessage({to: "main", message: ...})` so the CEO sees it before you finish (`AskUserQuestion` is unavailable to background subagents; start the body with your researcher id — the transport does not carry your name). End your turn; if the CEO replies by `SendMessage` you auto-resume with your transcript intact.
+Format: append to your log with `[QUESTION FOR HUMAN]` prefix AND `SendMessage({to: "main", message: ...})` so the CEO sees it mid-turn (`AskUserQuestion` is unavailable to background subagents; start the body with your researcher id — an agent spawned without a `name:` shows only its type in `from=`, while a named agent's `from=` carries its name, probed 2026-08-24/25 CC 2.1.241). End your turn; if the CEO replies by `SendMessage` you auto-resume with your transcript intact.
 
 ### When to Stop
 

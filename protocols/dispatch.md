@@ -6,7 +6,7 @@ Loaded by the CEO on every task dispatch. Not loaded for meta-commands (`/team11
 
 Cross-references to main SKILL:
 - Model Routing: `.team11/config.json → model_routing` is a record of intent; on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides the Agent-tool `model` param, agent frontmatter `model`, and the main model, so every dispatch runs on Fable 5 whatever the config says (verified 2026-08-24, CC 2.1.241). Check `echo $CLAUDE_CODE_SUBAGENT_MODEL` before assuming a routing change took effect.
-- HOTL Gate evaluation runs as step 3b in the Pair Loop (between pre-verification and human gate)
+- HOTL Gate evaluation runs as step 4b in the Pair Loop (between pre-verification and human gate)
 - Human Gate Protocol specifies use of `AskUserQuestion` for every human decision point
 
 ## Step 0: First-Run Detection
@@ -43,6 +43,14 @@ Wait for user response (via `AskUserQuestion` — see Human Gate Protocol). Then
 **If worktrees exist but `.team11/` doesn't**, just create `.team11/` and continue — the state directory is ephemeral and can be recreated anytime.
 
 **If both exist**, proceed directly to Step 1.
+
+## Step 0b: CEO Session Wiring (once per session)
+
+Before the first dispatch of a session (P2 rewire, 2026-08-25 — mechanisms probed 2026-08-24/25 on CC 2.1.241):
+
+1. **`ListAgents`** — record what is addressable. Peer CEO sessions on this box (other Claude Code terminals) appear as named sessions; note the relevant ones in the hive.md header as addresses for cross-session contracts. `ListAgents` is CEO-only — it is NOT available inside subagents (probed 2026-08-24 from inside a pair), so never tell a pair to call it.
+2. **One persistent `Monitor`** on `.team11/logs/*.md` + `.team11/_surfaced.md`, watching for `QUESTION FOR HUMAN | DONE | BLOCKED | [OUTBOX:` lines — the FALLBACK channel for agents that don't message: Workflow agents, ad-hoc dispatches, legacy logs. Named pairs push their events to `main` by `SendMessage` (delivered mid-turn), so the Monitor is a safety net, not the primary channel.
+3. **Cross-session contracts** ("HOLD released", "seed landed", …): send them as a `SendMessage` to the peer session AND mirror them into `hive.md` — **the hive is the record, the message is the alarm.** `notify_when_idle: true` yields a one-shot idle notice from a busy peer (native Windows since CC 2.1.239; probed 2026-08-24).
 
 ## Step 1: Assess Complexity
 
@@ -144,14 +152,24 @@ For each pair N:
   1. Reset worktree to latest main:
      cd ../food-aggro-pair-N && git fetch origin main && git reset --hard origin/main && git clean -fd
   2. The pair works directly on its permanent branch (team11-pair-N)
-  3. Update hive mind with Pair N's assignment + the agent id returned by the Agent tool (this id is what `TaskStop`, `SendMessage` and `ListAgents` address — `/tasks` lists running background agents; do not call `TaskList`/`TaskGet`, hidden on Fable 5)
-  4. Deploy Pair N agent (background)
+  3. Spawn BOTH agents of the pair up front, WITH `name:` (probed 2026-08-24/25, CC 2.1.241 —
+     the Agent tool accepts `name:` even though the CEO's visible schema omits it):
+       a. coder first:   Agent(subagent_type: "team11-coder-auditor", name: "<pair>-coder",   prompt: …)
+       b. auditor second: Agent(subagent_type: "team11-auditor",       name: "<pair>-auditor", prompt: …)
+     Spawn ORDER matters: the sibling roster is a snapshot at spawn — the later-spawned
+     auditor sees the coder; the coder learns its partner's name from the PARTNER_NAME
+     dispatch field. The auditor's FIRST prompt is small: "Read the brief + hive index,
+     acknowledge to main, stop." It parks; it resumes with full context when messaged.
+  4. Update hive mind with Pair N's assignment + both agent NAMES (`<pair>-coder`,
+     `<pair>-auditor`) — the name is what `SendMessage` and `TaskStop` address;
+     `/tasks` lists running background agents (do not call `TaskList`/`TaskGet`, hidden on Fable 5)
      → "Pair N deployed. Pair N+1 standing by..."
   5. Next pair (sees Pair N in hive mind)
 ```
 
 Each pair is launched using the `Agent` tool with:
-- `subagent_type: "team11-coder-auditor"` — the registered subagent stub at `.claude/agents/team11-coder-auditor.md` delegates to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`. The CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it.
+- `subagent_type`: **`"team11-coder-auditor"` for the coder, `"team11-auditor"` for the auditor.** The registered stubs in `.claude/agents/` delegate to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`; the CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it. The auditor definition is ENFORCED read-only (P1, certified 2026-08-24/25): `disallowedTools` denies Edit/Write/NotebookEdit and a `PreToolUse` guard denies mutating Bash — its write surface is findings/log/checkpoint/proposals only.
+- `name:` — `"<pair>-coder"` / `"<pair>-auditor"`. The name is the SendMessage/TaskStop address for the life of the session (probed 2026-08-24/25; the parameter is honored even though the CEO's visible schema omits it).
 - Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant (checklist F7; CEO-side schema not re-inspected 2026-08-24 — the subagent-side `Agent` schema already omits it). Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by the agent id the Agent tool returns (`ListAgents`).
 - `model` from `config.model_routing[role]` is a record of intent only (see Model Routing in main SKILL.md): on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides any `model` param or frontmatter value, so every pair runs on Fable 5 (which is also what the config records). To change routing, change/unset the env var — editing config.json alone does nothing.
 - **NEVER pass `isolation: "worktree"`** — it spawns an uncleaned throwaway worktree that accumulates (see **Worktree Hygiene** in `protocols/worktrees.md`). Agents work directly in their permanent **pool** worktree directory.
@@ -202,10 +220,11 @@ AVAILABLE MCPs: [list discovered MCP tools]
 
 PAIR: [N]
 PAIR_ID: [pair-N in solo, {prefix}-pair-N in connected, e.g. cs-pair-1]
-AGENT: [Team11 role label for this dispatch — freeform, e.g. a/b or 1/2. NOT the runtime agent id: that is returned by the Agent tool and is what `SendMessage`/`TaskStop`/`ListAgents` address; look it up with `ListAgents`]
-ROLE THIS ROUND: [coder|auditor]
+AGENT: [Team11 role label for this dispatch — freeform, e.g. a/b or 1/2. Your ADDRESS is your spawn name below, not this label]
+YOUR NAME: [<pair>-coder | <pair>-auditor — you were spawned with this `name:`; main and your partner address you by it, and your `from=` carries it]
+PARTNER_NAME: [<pair>-auditor | <pair>-coder — message them by this name]
+ROLE: [coder|auditor — fixed for this task; the auditor runs the ENFORCED read-only team11-auditor definition]
 WORKTREE PATH: [absolute path to permanent worktree, e.g. C:\Users\...\food-aggro-pair-1]
-PARTNER: [the other agent's context — what they're doing]
 
 HIVE MIND:
 [paste current .team11/hive.md content — includes previous pairs' entries]
@@ -226,38 +245,22 @@ PHEROMONE GOTCHAS: [from get_pheromones response for in-scope files — paste ea
 **Rules:**
 - Sequential initialization — deploy pairs one at a time, each sees previous pairs in hive mind
 - Parallel execution — once deployed, all pairs run simultaneously in background
-- Sequential within pairs — the first dispatch codes, the second audits, then they alternate
-- For a single pair: launch the first dispatch as coder; when it completes, launch the second as auditor with the coder's changes as context
+- Both agents of a pair are spawned UP FRONT (coder first, auditor second — the roster snapshot depends on spawn order). Never wait for the coder to finish before spawning the auditor.
+- Sequential within pairs — the coder works first; the parked auditor resumes when the coder messages it. Rounds alternate by MESSAGE, not by re-dispatch (probed 2026-08-24/25: a completed agent auto-resumes with its transcript intact).
 - Agents work in their permanent worktree directory, NOT the main repo
 - Hive mind file (`.team11/hive.md`) is in the main repo — agents read it there via absolute path (CEO writes it)
 
 ## Checkpoint Protocol
 
-Before each major phase transition, pairs write a checkpoint file to `.team11/checkpoints/pair-N-checkpoint.json`. This enables crash recovery — the CEO can read the checkpoint and resume the pair from the last known state.
+**Checkpoints are for CROSS-SESSION crash recovery ONLY** (slimmed in the P2 rewire, 2026-08-25). In-session, resume needs no checkpoint: a parked or completed agent auto-resumes with its full transcript when messaged (probed 2026-08-24/25, CC 2.1.241). A checkpoint matters only when the SESSION dies — a new session cannot address the old session's agents by name, so `/team11 recover` re-dispatches from the checkpoint + pair log.
 
-**Checkpoint file:** `.team11/checkpoints/pair-N-checkpoint.json`
+**Checkpoint file:** `.team11/checkpoints/pair-N-checkpoint.json` — four fields, nothing more:
 ```json
 {
-  "pair": 1,
-  "agent": "a",
-  "role": "coder",
-  "phase": "coding",
-  "task": "Add mobile detection to HUD overlay files",
-  "started_at": "2026-04-01T15:30:00Z",
-  "last_checkpoint": "2026-04-01T15:45:00Z",
-  "files_modified": [
-    "client-game/src/ui/HUD.js",
-    "client-game/src/ui/Minimap.js"
-  ],
-  "files_remaining": [
-    "client-game/src/ui/ChatPanel.js",
-    "client-game/src/ui/InventoryPanel.js"
-  ],
-  "findings_so_far": [],
-  "committed": false,
-  "commit_sha": null,
-  "next_action": "Edit ChatPanel.js to add mobile detection",
-  "context_notes": "Using isMobileDevice() from utils/device.js. Pattern: import at top, wrap touch handlers in if-block."
+  "pair": "pair-signals",
+  "phase": "committed",
+  "commit_sha": "abc1234",
+  "next_action": "Await audit of abc1234; apply the fix list when the auditor messages it"
 }
 ```
 
@@ -267,8 +270,10 @@ Before each major phase transition, pairs write a checkpoint file to `.team11/ch
 
 | Role | Checkpoint Moments |
 |------|--------------------|
-| **Coder** | After starting (phase: `starting`), after all files edited (phase: `coding` → `testing`), after committed (phase: `committed`) |
-| **Auditor** | After starting audit (phase: `auditing`), after findings written (phase: `findings_written`) |
+| **Coder** | At start (phase: `starting`), after each commit (phase: `committed` + the sha), after applying a fix round (phase: `fixing` → `committed`) |
+| **Auditor** | At audit start (phase: `auditing`), after findings written (phase: `findings_written`) |
+
+Everything richer — files touched, context notes, findings-so-far — lives in the **pair log**, which recovery reads alongside the checkpoint. Do not duplicate it into the checkpoint.
 
 **CEO reads checkpoints for `/team11 recover`** — see Error Recovery section in main SKILL.md.
 
@@ -284,62 +289,71 @@ If a subtask involves editing 5 files that interact (endpoint + schema + hook + 
 
 The hive mind still gets updated per-file (so other pairs see what's being touched in real time), but the audit cycle waits for the coherent whole.
 
-```
-1. Agent A codes the COMPLETE subtask:
-   - Writes checkpoint (phase: "starting")
-   - Edits all files in scope (updates hive.md per-file for visibility)
-   - Writes checkpoint (phase: "coding" with files_modified updated)
-   - Runs tests on the complete change
-   - Commits as one logical unit
-   - Writes checkpoint (phase: "committed" with commit_sha)
-   - Signals DONE
+**The pair is two persistent named agents** (`<pair>-coder`, `<pair>-auditor` — spawned in Step 4). **Rounds are MESSAGES, not re-dispatches:** a completed agent auto-resumes with its full transcript when messaged (probed 2026-08-24/25, CC 2.1.241 — the P1 lane ran 4 audit rounds with zero re-dispatches). Nobody re-reads the brief between rounds; nobody re-explains context.
 
-2. Agent B audits the COMPLETE subtask as a whole:
-   - Writes checkpoint (phase: "auditing")
+```
+1. CODER codes the COMPLETE subtask:
+   - Writes checkpoint {pair, phase: "coding", commit_sha: null, next_action}
+   - Edits all files in scope (logs per-file in the pair log; the hive entry is the claim)
+   - Runs tests on the complete change
+   - Commits as one logical unit; checkpoint → {phase: "committed", commit_sha}
+   - MESSAGES the auditor ("<pair>-auditor"): sha, files touched, what to attack
+   - MESSAGES main: "DONE round N" + sha
+   (both messages also get pair-log lines — the log is the record, the message is the alarm)
+
+2. AUDITOR resumes (the coder's message wakes it, transcript intact) and audits
+   the COMPLETE subtask as a whole:
+   - Writes checkpoint {phase: "auditing"}
    - Reads ALL changed files together — understands the full interaction
    - Traces scenarios through the complete change, not isolated files
-   - Produces findings (each finding includes **Verdict:** PENDING)
-   - Writes checkpoint (phase: "findings_written")
-   ├─ Trivial fix: B fixes directly → A audits B's fix (roles swapped)
-   ├─ Substantive issue: B flags it → report to human
-   └─ Clean audit: proceed to pre-verification
+   - Produces the findings file (format unchanged; each finding **Verdict:** PENDING)
+   - Checkpoint → {phase: "findings_written"}
+   ├─ Trivial fix: auditor MESSAGES the exact one-liner to the coder — it cannot edit
+   │  (ENFORCED read-only: the team11-auditor definition denies Edit/Write and mutating
+   │  Bash). The coder applies it; the invariant holds — editor and reviewer are still
+   │  different agents, and the auditor reviews the application next round.
+   ├─ Substantive issue: auditor flags it in findings → MESSAGES main (verdict + findings path)
+   └─ Clean audit: auditor MESSAGES main (verdict PASS + findings path) → pre-verification
 
-3. PRE-VERIFICATION: CEO runs automated checks in the pair's worktree
+3. FIX ROUNDS = MESSAGES: the coder applies the fix list, re-commits, messages the
+   auditor + main again (round N+1). No re-dispatch, no brief re-explaining — the
+   transcript is the context. The CEO can course-correct any agent mid-round by
+   SendMessage (with a durable copy appended to the pair's inbox file).
+
+4. PRE-VERIFICATION: CEO runs automated checks in the pair's worktree
    - Read pre_verification config from .team11/config.json
    - Run each enabled command whose `scope` matches touched files
    - If a blocking command fails:
      → Log failure output in pair log
-     → Return to coder with error output — NO human gate
+     → MESSAGE the coder with the error output — NO human gate
      → Coder fixes, re-commits, auditor re-audits, pre-verification re-runs
    - If a `blocking: false` command fails: log in pair log, continue
-   - If all blocking commands pass: proceed to step 3b
+   - If all blocking commands pass: proceed to step 4b
    - Log results in pair log: "[CEO] Pre-verification: ruff-check ✓, mypy ✓ (non-blocking), frontend-lint ✓"
 
-3b. HOTL GATE EVALUATION (see HOTL Gate section in main SKILL):
-    - Run `hotl-eval` (`node .team11/mcp-server/dist/scripts/hotl-eval.js --pair <id> --round <n> --findings <path> --worktree <path> --preverif pass|fail`): it evaluates the auto-merge criteria against the audit and appends the shadow-log line to .team11/findings/hotl-shadow.jsonl in BOTH modes (step 3b automated 2026-08-24; mode is `live` on this project per config.json)
-    - If mode=live AND all criteria pass → SKIP step 4, proceed to step 6
-    - Otherwise continue to step 4
+4b. HOTL GATE EVALUATION (see HOTL Gate section in main SKILL):
+    - Run `hotl-eval` (`node .team11/mcp-server/dist/scripts/hotl-eval.js --pair <id> --round <n> --findings <path> [--worktree <path>] [--base <ref>] [--preverif pass|fail]`): it evaluates the auto-merge criteria against the audit and appends the shadow-log line to .team11/findings/hotl-shadow.jsonl in BOTH modes (automated 2026-08-24; mode is `live` on this project per config.json). `--base` defaults to main→origin/main — a repo with neither (e.g. the skill repo) needs `--base master`; omitting `--preverif` fails closed (preverif-unknown blocks auto-merge).
+    - If mode=live AND all criteria pass → SKIP step 5 (human gate) and merge (protocol Step 6)
+    - Otherwise continue to step 5
 
-4. HUMAN GATE: Surface findings to user IMMEDIATELY via AskUserQuestion
-   - Write findings to .team11/findings/pair-N-round-M.md
-   - Each finding includes **Verdict:** PENDING
+5. HUMAN GATE (unchanged): surface findings to the user IMMEDIATELY via AskUserQuestion
+   - Findings are already at .team11/findings/pair-N-round-M.md (each **Verdict:** PENDING)
    - Use AskUserQuestion with structured options (see Human Gate Protocol in main SKILL)
-   - The user should never have to poll for findings. Notify them the moment findings are ready.
+   - Fire a PushNotification on this gate — and on every blocker — so the alarm reaches
+     the user away from the terminal. The user never polls for findings.
 
-5. After human review, CEO updates verdicts:
+6. After human review, CEO updates verdicts:
    - For each finding, set verdict to CONFIRMED, DISPUTED, or DEFERRED
    - Update .team11/findings/verdicts.json with the verdict entry
    - Update the shadow log line with the human_decision + agreement flag
-   - Include verdict counts in the pair completion report
+     (`hotl-eval --update-decision --pair <id> --round <n> --decision <X>`)
+   - Relay required fixes to the coder by MESSAGE (durable copy → inbox file)
 
-6. If fixes needed: whoever didn't write it last, reviews it
-
-7. Loop until pair agrees + human approves (or HOTL auto-merged)
-
-8. CEO merges worktree to main branch (Step 6)
+7. Loop until the auditor passes it AND the human approves (or HOTL auto-merged),
+   then the CEO merges the worktree to main (protocol Step 6)
 ```
 
-**The auditing agent MUST stop and surface findings** unless the HOTL gate is in `live` mode and all criteria pass.
+**The auditor MUST stop after messaging its verdict** — it never merges, and the human gate runs unless the HOTL gate is in `live` mode and all criteria pass.
 
 ### Verdicts tracking file (`.team11/findings/verdicts.json`)
 
@@ -477,7 +491,7 @@ All worktrees end up on the same main after their reset. No drift.
 ### Changes Made
 | File | What Changed | Why | Agent |
 |------|-------------|-----|-------|
-| `path:L10-45` | [description] | [reasoning] | [agent id] |
+| `path:L10-45` | [description] | [reasoning] | [agent name] |
 
 ### Audit Findings & Resolutions
 | # | Finding | Severity | Category | Verdict | Resolution |
@@ -486,8 +500,8 @@ All worktrees end up on the same main after their reset. No drift.
 
 ### Audit Detail
 **Round 1:**
-- Coder ([agent id]) coded: [summary of all changes]
-- Auditor ([agent id]) audited: [N] findings ([breakdown])
+- Coder ([agent name]) coded: [summary of all changes]
+- Auditor ([agent name]) audited: [N] findings ([breakdown])
   - Fixed directly: [list trivial fixes the auditor made]
   - Flagged for human: [list substantive issues]
 - Human reviewed: [approved / rejected with feedback / modified] (or "auto-merged via HOTL")
