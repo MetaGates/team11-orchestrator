@@ -335,7 +335,7 @@ Team11 is **manual-only**. Nothing dispatches unless you invoke it. No auto-trig
 | `/team11 teardown` | Remove all permanent worktrees entirely (frees disk). Uses `git worktree remove`. | `protocols/worktrees.md` |
 | `/team11 hive` | Display the current hive mind (`.team11/hive.md`) | main only |
 | `/team11 log <N>` | Display pair N's activity log | main only |
-| `/team11 watch` | Live view: latest messages from pairs + hive + latest pair-log entries | main only |
+| `/team11 watch` | Live view: latest messages from pairs + `ListAgents` (live/parked) + hive + latest pair-log entries | main only |
 | `/team11 watch <N>` | Live view: pair N — latest messages + log + current diff in worktree | main only |
 | `/team11 findings` | List all pending audit findings awaiting human review | main only |
 | `/team11 proposals` | List all pending skill/memory proposals awaiting human review | main only |
@@ -439,7 +439,7 @@ For **read-only, schema-shaped, embarrassingly-parallel** phases (audits, resear
 | Phase | Use |
 |-------|-----|
 | Read-only scatter→gather (audit / research / analyze / score), **no writes** | **`Workflow` tool** |
-| Writes / human approval / role rotation / durable artifacts / cross-run memory | **Team11 gated pair loop** |
+| Writes / human approval / the enforced coder-auditor split / durable artifacts / cross-run memory | **Team11 gated pair loop** |
 | Hybrid (most real tasks) | **Workflow fan-out → validated results → human gate → pair loop for the writes** |
 
 **Hard invariant:** a Workflow has **no human gate and no memory** — it NEVER lands writes. The Workflow is the *engine*; the gated pair loop is the *governed process* that owns every write ([[feedback_review_before_changes]]). Full how-to (invoking the tool, schema design, feeding results to the gate, the repeatability caveats): **`protocols/workflow-fanout.md`**.
@@ -544,7 +544,7 @@ Probed live 2026-08-24/25 (CC 2.1.241):
 
 - **Agents spawned with `name:` are addressable by that name.** The `Agent` tool accepts a `name:` parameter (absent from the CEO's visible tool schema but honored by the runtime — tested, not inferred; plan §I.2). Pairs are spawned as `<pair>-coder` then `<pair>-auditor`.
 - **Sibling roster:** a named background subagent starts with a system-reminder roster listing `main` + every agent already spawned with a name (snapshot at spawn — the later-spawned auditor sees the coder; the coder learns its partner's name from the `PARTNER_NAME` dispatch field or from the auditor's first message).
-- **Delivery is mid-turn** — a message to a busy agent arrives between its tool calls. Nobody polls.
+- **Delivery is mid-turn** — a message arrives between the receiver's tool calls (subagent→`main` and CEO↔CEO probed 2026-08-24/25; delivery to a BUSY subagent confirmed live 2026-08-25, t11proto round 1). Nobody polls.
 - **A completed agent auto-resumes with its full transcript when messaged.** Round N of the pair loop is a *message*, not a re-dispatch (the P1 lane ran 4 audit rounds with zero re-dispatches, 2026-08-24/25).
 - **`from=` carries the sender's name** when the sender was spawned named (an unnamed sender shows as its type, `from="claude"`). Message bodies still start `[<pair>/<role>]` — a log-record convention, not routing.
 - **`ListAgents` is NOT available inside subagents** (probed from inside a pair, 2026-08-24). A pair's only addresses are `main` + its partner's name — which is all a pair needs.
@@ -651,7 +651,7 @@ Each pair writes to its own log. The CEO and other pairs can read it, but only t
 | `findings/verdicts.json` | WRITE (after human review) | read | read |
 | `findings/hotl-shadow.jsonl` | WRITE (append-only, via `hotl-eval`) | — | read |
 | `proposals/*.md` | read + act on approval | WRITE | read + approve/reject |
-| `.claude/agent-memory/<agent>/MEMORY.md` | read | injected at spawn; agents update via the memory system (carrier regeneration of the index is a P3 item) | read |
+| `.claude/agent-memory/<agent>/MEMORY.md` | read | injected at spawn; agents update via the memory system (the enforced auditor's index is read-only in practice — `disallowedTools` wins; it curates via proposals/the coder. Carrier regeneration of the index is a P3 item) | read |
 
 **Messages are not in this table because they are not a file** — they are transport. Anything sent that matters must also land in one of the files above.
 
@@ -741,7 +741,7 @@ Worktrees are NOT deleted on stop — they're permanent. Any uncommitted work in
 
 Gives a snapshot of what all agents are doing right now.
 
-**`/team11 watch` (all pairs):** messages first (the freshest signal), then hive, then log tails.
+**`/team11 watch` (all pairs):** messages first (the freshest signal), plus `ListAgents` for who is live vs parked right now, then hive, then log tails.
 ```
 TEAM11 LIVE VIEW — [timestamp]
 

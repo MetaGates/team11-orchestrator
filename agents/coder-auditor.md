@@ -478,7 +478,7 @@ Don't ask when:
    **Issue:** [what's wrong — be specific, include the actual code]
    **Impact:** [what breaks if this isn't fixed — trace the scenario]
    **Suggested Fix:** [exact code or approach to fix it]
-   **Can I Fix This Directly?** [yes — trivial | no — needs discussion]
+   **Trivial enough to message the coder?** [yes — messaged | no — needs discussion]
    **Recommended Action:** [what you recommend the human do — never blank] · **Confidence:** [high|med|low]
    **Escalation Type:** [confidence | permission | conflict | capability]
    **Alternatives Rejected:** [option → why rejected; or "none"]

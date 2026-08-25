@@ -170,7 +170,7 @@ For each pair N:
 Each pair is launched using the `Agent` tool with:
 - `subagent_type`: **`"team11-coder-auditor"` for the coder, `"team11-auditor"` for the auditor.** The registered stubs in `.claude/agents/` delegate to the full agent prompt at `~/.claude/skills/team11/agents/coder-auditor.md`; the CEO does NOT paste the full agent prompt into the `prompt` parameter — the stub loads it. The auditor definition is ENFORCED read-only (P1, certified 2026-08-24/25): `disallowedTools` denies Edit/Write/NotebookEdit and a `PreToolUse` guard denies mutating Bash — its write surface is findings/log/checkpoint/proposals only.
 - `name:` — `"<pair>-coder"` / `"<pair>-auditor"`. The name is the SendMessage/TaskStop address for the life of the session (probed 2026-08-24/25; the parameter is honored even though the CEO's visible schema omits it).
-- Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant (checklist F7; CEO-side schema not re-inspected 2026-08-24 — the subagent-side `Agent` schema already omits it). Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by the agent id the Agent tool returns (`ListAgents`).
+- Do NOT pass `run_in_background` — since 2.1.232 (fork mode on by default) every Agent spawn runs in the background; the parameter is accepted-but-redundant (checklist F7; CEO-side schema not re-inspected 2026-08-24 — the subagent-side `Agent` schema already omits it). Completion arrives via the SubagentStop hook / carrier and the completion notification; track the pair by its agent NAMES (`<pair>-coder` / `<pair>-auditor`) — runtime ids matter only for unnamed ad-hoc spawns.
 - `model` from `config.model_routing[role]` is a record of intent only (see Model Routing in main SKILL.md): on this machine `CLAUDE_CODE_SUBAGENT_MODEL=claude-fable-5` overrides any `model` param or frontmatter value, so every pair runs on Fable 5 (which is also what the config records). To change routing, change/unset the env var — editing config.json alone does nothing.
 - **NEVER pass `isolation: "worktree"`** — it spawns an uncleaned throwaway worktree that accumulates (see **Worktree Hygiene** in `protocols/worktrees.md`). Agents work directly in their permanent **pool** worktree directory.
 
@@ -270,7 +270,7 @@ PHEROMONE GOTCHAS: [from get_pheromones response for in-scope files — paste ea
 
 | Role | Checkpoint Moments |
 |------|--------------------|
-| **Coder** | At start (phase: `starting`), after each commit (phase: `committed` + the sha), after applying a fix round (phase: `fixing` → `committed`) |
+| **Coder** | At start (phase: `starting`), after the hive read (phase: `coding`), after all files edited (phase: `testing`), after each commit — initial or fix round (phase: `committed` + the sha) |
 | **Auditor** | At audit start (phase: `auditing`), after findings written (phase: `findings_written`) |
 
 Everything richer — files touched, context notes, findings-so-far — lives in the **pair log**, which recovery reads alongside the checkpoint. Do not duplicate it into the checkpoint.
@@ -502,7 +502,7 @@ All worktrees end up on the same main after their reset. No drift.
 **Round 1:**
 - Coder ([agent name]) coded: [summary of all changes]
 - Auditor ([agent name]) audited: [N] findings ([breakdown])
-  - Fixed directly: [list trivial fixes the auditor made]
+  - Trivial fixes messaged → applied by coder: [list]
   - Flagged for human: [list substantive issues]
 - Human reviewed: [approved / rejected with feedback / modified] (or "auto-merged via HOTL")
 

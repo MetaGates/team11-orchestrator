@@ -39,7 +39,7 @@ Team11 was re-verified against Claude Code 2.1.241 and rebuilt on the runtime's 
 - **Messaging pairs.** A pair is now two persistent NAMED agents (`<pair>-coder`, `<pair>-auditor`) spawned up front — the `Agent` tool accepts `name:`, and the name is the `SendMessage`/`TaskStop` address. They message each other and `main` by name (delivered mid-turn); a completed agent auto-resumes with its full transcript when messaged, so an audit round is a MESSAGE, not a re-dispatch (the P1 lane ran 4 rounds with zero re-dispatches). Pairs push DONE / QUESTION / BLOCKED / CONFLICT to `main` — the CEO stops polling logs (one persistent `Monitor` remains as the fallback net for non-messaging agents). Cross-session `SendMessage` + `notify_when_idle` work CEO-to-CEO on native Windows (since CC 2.1.239).
 - **Enforced auditor.** The auditor runs a dedicated `team11-auditor` agent definition: `disallowedTools` denies Edit/Write/NotebookEdit and a `PreToolUse` guard denies mutating Bash. Read-only is a tripwire now, not an honor system (certified through four adversarial guard rounds, pair-t11defs 2026-08-24/25). Trivial fixes are MESSAGED to the coder, never edited by the auditor — nobody reviews their own edit, held by construction.
 - **Per-agent memory.** Agent definitions carry `memory: project` — `.claude/agent-memory/<agent>/MEMORY.md` is injected into that agent's system prompt on every spawn (seeded with the project's top gotchas; carrier regeneration of the index is a P3 item).
-- **Carrier v2 (P0 hygiene).** The carrier scans every `*.md` log (not just `pair-*`), stamps `source_pair` provenance, derives sane titles, runs decay on every pass, and writes `.team11/_surfaced.md` (questions) + `.team11/_health.json`; its SubagentStop hook fires matcher-less on every subagent stop.
+- **Carrier v2 (P0 hygiene).** The carrier scans every `*.md` log (not just `pair-*`), stamps `source_pair` provenance, derives sane titles, and writes `.team11/_surfaced.md` (questions) + `.team11/_health.json` (health snapshot; wiring `run_decay` into every carrier pass is a P3 item — the decay curve itself is unchanged, decision D5 reverted); its SubagentStop hook fires matcher-less on every subagent stop.
 - **HOTL live.** The human-on-the-loop gate flipped from `shadow` to `live` on 2026-08-24 (44 would-auto-merge / 1 disagreement over 3.5 months of shadow — operator decision D2). `hotl-eval` automates the shadow-log line in both modes; in live mode a fully-passing audit merges without a human prompt (risk-file diffs always gate).
 - **Checkpoints slimmed** to `{pair, phase, commit_sha, next_action}` — cross-session crash recovery only; in-session resume is the transcript.
 - **Communication is three layers:** messages = the ALARM, logs = the RECORD, memory (DB + per-agent MEMORY.md) = the KNOWLEDGE. A message is never the record.
@@ -467,11 +467,11 @@ Each gets its own `.team11/` directory. Completely isolated. No interference.
 
 ## Design Principles
 
-### Why Rotating Pairs Instead of Fixed Roles?
+### Why Generalist Pairs Instead of Specialist Agents?
 
 In Team10, specialized agents (Pipeline Agent, Scoring Agent, Frontend Agent) couldn't help each other. If the Pipeline Agent was idle while the Backend Agent was overloaded, the idle agent was wasted.
 
-Team11 agents are all identical generalists. Any agent can work on any file in any language. The pair structure ensures quality (adversarial review) without requiring specialization.
+Team11 agents are generalists on the CODE — any pair can work on any file in any language. Since the P2 rewire (2026-08-25) the pair itself is asymmetric by construction: the coder makes every edit, and the ENFORCED read-only auditor reviews every commit. The pair structure ensures quality (adversarial review) without requiring domain specialization.
 
 ### Why Human Gates on Every Audit?
 
