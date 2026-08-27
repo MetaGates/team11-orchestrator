@@ -1,6 +1,6 @@
 ---
 name: team11-coder-auditor
-description: "Team11 paired coder-auditor agent. Codes in the pair loop; messages main and its partner by name. Role rotates — never reviews own edit."
+description: "Team11 pair CODER agent. Codes in the pair loop; messages main and its partner by name. Role fixed per task since the P2 rewire — every edit is the coder's; the ENFORCED read-only team11-auditor reviews. Nobody reviews their own edit. (Legacy solo/rotation dispatches: the read-only-auditor rule is self-enforced.)"
 model: fable
 memory: project
 background: true
